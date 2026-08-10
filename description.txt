@@ -1,0 +1,161 @@
+UMBRA OS — PROJECT DESCRIPTION
+===============================
+
+WHAT THIS IS
+------------
+Umbra OS is an invisible AI computer assistant for Windows. It watches what you
+do on your screen, learns from it, and can take over your computer to do things
+for you: browse the web, control real Windows applications, manage your files,
+work in your code repositories, produce videos, send messages, and more — all
+while you keep using your own desktop.
+
+It is a monorepo of TypeScript (Node.js) for the main system, a Rust crate for
+the encrypted P2P mesh, a bundled PWA for phone control, and Python helper
+scripts for the browser-use integration.
+
+CORE IDEA
+---------
+- Everything you do is read (screen OCR), filtered (privacy guard), stored
+  (recall memory with embeddings), and structured into a knowledge graph.
+- A task planner breaks your request into atomic steps (browse → click → type →
+  read → repo commands → videos). Every step can heal itself on failure.
+- A 100-skill "skill stack" (20 domains × 5 skills) routes intents to skill
+  definitions; an MCP registry dispatches external tools; a metering layer
+  gates every LLM call behind a plan tier, a circuit breaker, and token
+  accounting.
+- A Graphify/Caveman compression pipeline densifies huge context before LLM
+  calls (10,000 tokens → ~300 tokens with expandable cliques).
+
+TECH STACK
+----------
+- Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
+- Jest (ts-jest) for tests — 16 suites, 114 tests, all green
+- oxlint for linting — zero issues
+- better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
+- node-fetch-free: uses Node 18+ global fetch
+- Rust (cargo) in `mesh/` for the encrypted P2P mesh
+- Tesseract (eng.traineddata committed) for OCR
+- PWA in `src/mobile/pwa/` for phone pairing/control
+- WebRTC (ws signaling) for device streaming
+
+DIRECTORY LAYOUT
+----------------
+- src/index.ts         — composition root: the UmbraOS class wires every subsystem
+- src/types.ts         — canonical config/task/knowledge types (zod-validated config)
+- src/config/          — ConfigManager; config lives at ~/.umbra/config.json
+- src/core/agent/      — AgentRuntime (step executor), TaskPlanner, LLMConnector,
+                         MeteredLLMConnector (circuit breaker + token metering),
+                         WorkspaceFiles, ReposManager, ConsentGate, ProactiveAgent
+- src/core/skill/      — SkillStack (100 skills), SkillRouter (intent scoring),
+                         SkillRecorder (learns hot skills), SkillCompiler
+- src/core/graphify/   — Caveman, Chunker, Clustering, GraphSummarizer,
+                         GraphifyContextEngine (compression pipeline)
+- src/core/mcp/        — McpRegistry, McpRouter, McpHttpConnector (vault-backed auth)
+- src/core/metering/   — MeteringService (tiers free/byok/pro/ultimate + circuits)
+- src/core/vault/      — AuditVault (tamper-evident log), CredentialVault (AES-256-GCM)
+- src/core/desktop2/   — Desktop2Environment (sandbox browser),
+                         RealDesktop2 (ghost mode: real apps + real user Chrome)
+- src/core/workspace/  — VirtualDisplayManager, SwarmManager, AgentDesktop, InputGuard
+- src/core/browseruse/ — BrowserUseBridge (fast "browser-use" engine)
+- src/core/video/      — VideoProducer (Remotion + OpenMontage tool registry)
+- src/core/vision/     — ScreenReader (OCR), ContentAnalyzer
+- src/core/recall/     — ActivityWatcher, MacroSynthesizer
+- src/core/shadow/     — LiveShadowEngine (watch + consent-gated takeover)
+- src/core/meeting/    — MeetingAgent (summaries, action items)
+- src/core/telco/      — TelnyxClient (SMS/voice)
+- src/core/docker/     — DockerDaemon (workers)
+- src/core/selfheal/   — SelfHealingGuard, src/core/audio (noise cancellation)
+- src/core/privacy/    — PrivacyGuard (blocks apps/URLs from recall)
+- src/knowledge/       — KnowledgeGraph, DeepUnderstandingEngine,
+                         RecallToKnowledgeBridge, journal (Journal/TopicIndexer)
+- src/mobile/          — PwaServer (QR pairing UI), PreviewStreamer (ws frames)
+- src/p2p/             — PairingManager, P2PConnectionManager, EncryptedChannel
+- src/native/win32/    — native I/O: mouse/keyboard, screen capture, virtual displays
+- src/api/             — ApiServer (REST + WS, status/consent/tasks)
+- src/overlay/         — CommandHUD (Ctrl+Shift+Space)
+- mesh/                — Rust mesh (umbra-mesh, umbra-meshd) + TS bindings
+- scripts/             — dev/test/diagnose helper scripts
+- docs/ui-contract.md  — API contract for UI clients
+
+HOW TO BUILD / TEST / RUN
+-------------------------
+    npm install          # install deps
+    npm run build        # tsc → dist/
+    npm test             # jest (114 tests today)
+    npm run lint         # oxlint
+
+Run requires either a local Ollama (free, default:
+`http://localhost:11434`, models set in ~/.umbra/config.json) or cloud keys
+(OpenAI/Anthropic/OpenAI-compatible) in config.
+
+    npm run dev          # ts-node src/index.ts  (live dev)
+    npm start            # node dist/index.js    (built)
+
+Environment variables:
+    UMBRA_ENGINE   browseruse (default) | desktop2 | ghost
+                   — ghost mode drives the REAL Windows desktop + user Chrome
+                   — used by the phone/PWA control plane too
+    UMBRA_HWID     credential-vault binding (default: local-machine)
+    USERPROFILE    base dir for ~/.umbra (config, recall DB, logs, vault)
+
+CONFIG (~/.umbra/config.json)
+-----------------------------
+Generated with sane defaults by ConfigManager on first run. Key sections
+(see src/types.ts UmbraConfig):
+    provider / models            — ollama | openai | anthropic | openai-compatible
+    plan.tier                    — free | byok | pro | ultimate (budget metering)
+    p2p                          — webPort, signalingPort, stunServers, relayFps
+    mcp.connectors               — external tool endpoints (vault-backed creds)
+    graphify                     — chunkTokens, summaryTokens, maxContextTokens
+    compiler                     — skill native backend (none | node | tcc | clang)
+    shadow, meeting, telco, docker — feature toggles + provider settings
+
+WHAT IS DONE (state: build+tests+lint green, 114 tests / 16 suites)
+-------------------------------------------------------------------
+1. Agent loop: planning (with clarification), step execution (browse, desktop,
+   ghost real-desktop, files, repos, video tools, web search), self-healing,
+   consent gate, emergency stop, audit log, learning from executions.
+2. Skills: 100-skill catalog, router (word-boundary trigger scoring), recorder,
+   compiler (native backends), MCP registry + router + HTTP connector with
+   vault-encrypted credentials. New step actions: `skill`, `skill_learn`.
+3. Metering: plan tiers, session caps, circuit breakers per service, token
+   accounting; every LLM call goes through the MeteredLLMConnector.
+   Graphify context compression is applied to think-steps.
+4. Recall/privacy/journal: OCR screen reader, privacy masking, vector memory,
+   hourly journal, topic index, proactive suggestions, macro synthesis.
+5. Devices: QR pairing (ECDH + encrypted QR payload), WebRTC signaling,
+   PWA control plane, live frame preview, shadow takeover.
+6. Video: producer with script/narration via OpenMontage tools; meeting agent;
+   Telnyx SMS/calls; Docker worker daemon; encryption vault.
+
+HOW TO CONTINUE (roadmap — what collaborators should pick up)
+------------------------------------------------------------
+1. Setup CLI (scripts/setup.ts or `npm run setup`):
+   collect provider + API keys → CredentialVault → write config.json → live
+   validation call. (Currently keys are placed manually in config or vault.)
+2. Cloud Docker deployment: Dockerfile + docker-compose.yml + deploy script.
+   NOTE: phone PWA needs HTTPS + a reachable signaling port; a TURN server
+   (or STUN fallback) is needed for WebRTC off-LAN.
+3. Live LLM testing on real providers (Ollama is the off-line default).
+   OpenAI/Anthropic endpoints already implemented in LLMConnector.
+4. NativeCore smoke tests (src/native/win32) on a real machine; CI story for
+   Windows runners (build + tests + lint in GitHub Actions).
+5. MCP connectors: define real endpoints in config.mcp.connectors; credentials
+   flow through CredentialVault (vault.bin is HWID-bound, never commit it).
+6. Mesh (Rust): wire umbra-mesh encrypted channel as an alternative to the ws
+   relay in P2PConnectionManager.
+7. Video production: OpenMontage tool registry lives in external/OpenMontage
+   (cloned separately; repo excludes external/ — see .gitignore).
+
+CONVENTIONS
+-----------
+- Every new module ships with a test (src/**/*.test.ts), lint-clean, and wired
+  through src/index.ts (composition root) + exposed on subsystems getter.
+- No secrets in code or config ever: secrets live in CredentialVault or
+  ~/.umbra/config.json (both git-ignored paths).
+- .gitignore excludes: node_modules, dist, .venv, external/, mesh/target,
+  downloaded_files, *.env*, temp.env, *.db, logs.
+- Keep the full suite green: `npm run build && npm test && npm run lint`.
+
+This repository is PRIVATE — invite collaborators from GitHub → Settings →
+Collaborators. Only invited accounts can see it.
