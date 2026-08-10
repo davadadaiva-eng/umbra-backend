@@ -1,0 +1,844 @@
+import { Task, TaskStep, TaskResult } from '../../types';
+import * as path from 'path';
+import { LLMConnector, LLMMessage } from './LLMConnector';
+import { TaskPlanner, PlannedStep } from './TaskPlanner';
+import { WorkspaceFiles } from './WorkspaceFiles';
+import { ReposManager } from './ReposManager';
+import { launchApp } from '../../native/win32/InputNative';
+import { AgentDesktop } from '../workspace/AgentDesktop';
+import { BrowserUseBridge } from '../browseruse/BrowserUseBridge';
+import { KnowledgeGraph } from '../../knowledge/KnowledgeGraph';
+import { SwarmManager } from '../workspace/SwarmManager';
+import { SelfHealingGuard } from '../selfheal/SelfHealingGuard';
+import { VectorMemory } from '../memory/VectorMemory';
+import { AuditVault } from '../vault/AuditVault';
+import { ConsentGate } from './ConsentGate';
+import { Desktop2Environment } from '../desktop2/Desktop2Environment';
+import { RealDesktop2 } from '../desktop2/RealDesktop2';
+import { OpenMontageBridge } from '../video/OpenMontageBridge';
+import { VideoProducer, VideoBrief } from '../video/VideoProducer';
+import { SkillRouter } from '../skill/SkillRouter';
+import { SkillRecorder } from '../skill/SkillRecorder';
+import { McpRouter } from '../mcp/McpRouter';
+import { MeteringService } from '../metering/MeteringService';
+import { GraphifyContextEngine } from '../graphify/GraphifyContextEngine';
+import { eventBus } from '../EventBus';
+import { getLogger } from '../Logger';
+export class AgentRuntime {
+  private llm: LLMConnector;
+  private planner: TaskPlanner;
+  private knowledge: KnowledgeGraph;
+  private swarm?: SwarmManager;
+  private healer?: SelfHealingGuard;
+  private memory?: VectorMemory;
+  private vault?: AuditVault;
+  private consent?: ConsentGate;
+  private desktop2?: Desktop2Environment;
+  private realDesktop?: RealDesktop2;
+  private workspace?: WorkspaceFiles;
+  private agentDesktop?: AgentDesktop;
+  private bridge?: BrowserUseBridge;
+  private openmontage?: OpenMontageBridge;
+  private videoProducer?: VideoProducer;
+  private repos?: ReposManager;
+  private skillRouter?: SkillRouter;
+  private skillRecorder?: SkillRecorder;
+  private mcpRouter?: McpRouter;
+  private metering?: MeteringService;
+  private graphify?: GraphifyContextEngine;
+  private activeTasks: Map<string, Task> = new Map();
+  private maxSteps: number = 15;
+
+  constructor(
+    llm: LLMConnector,
+    knowledge: KnowledgeGraph,
+    planner: TaskPlanner,
+    workspace?: WorkspaceFiles,
+  ) {
+    this.llm = llm;
+    this.knowledge = knowledge;
+    this.planner = planner;
+    this.workspace = workspace;
+  }
+
+  registerSubsystems(subsystems: {
+    swarm?: SwarmManager;
+    healer?: SelfHealingGuard;
+    memory?: VectorMemory;
+    vault?: AuditVault;
+    consent?: ConsentGate;
+    desktop2?: Desktop2Environment;
+    realDesktop?: RealDesktop2;
+    agentDesktop?: AgentDesktop;
+    bridge?: BrowserUseBridge;
+    openmontage?: OpenMontageBridge;
+    videoProducer?: VideoProducer;
+    repos?: ReposManager;
+    skillRouter?: SkillRouter;
+    skillRecorder?: SkillRecorder;
+    mcpRouter?: McpRouter;
+    metering?: MeteringService;
+    graphify?: GraphifyContextEngine;
+  }): void {
+    if (subsystems.swarm) this.swarm = subsystems.swarm;
+    if (subsystems.healer) this.healer = subsystems.healer;
+    if (subsystems.memory) this.memory = subsystems.memory;
+    if (subsystems.vault) this.vault = subsystems.vault;
+    if (subsystems.consent) this.consent = subsystems.consent;
+    if (subsystems.desktop2) this.desktop2 = subsystems.desktop2;
+    if (subsystems.realDesktop) this.realDesktop = subsystems.realDesktop;
+    if (subsystems.agentDesktop) this.agentDesktop = subsystems.agentDesktop;
+    if (subsystems.bridge) this.bridge = subsystems.bridge;
+    if (subsystems.openmontage) this.openmontage = subsystems.openmontage;
+    if (subsystems.videoProducer) this.videoProducer = subsystems.videoProducer;
+    if (subsystems.repos) this.repos = subsystems.repos;
+    if (subsystems.skillRouter) this.skillRouter = subsystems.skillRouter;
+    if (subsystems.skillRecorder) this.skillRecorder = subsystems.skillRecorder;
+    if (subsystems.mcpRouter) this.mcpRouter = subsystems.mcpRouter;
+    if (subsystems.metering) this.metering = subsystems.metering;
+    if (subsystems.graphify) this.graphify = subsystems.graphify;
+  }
+
+  async submitTask(description: string, priority: number = 0): Promise<Task> {
+    const task: Task = {
+      id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      description,
+      status: 'pending',
+      priority,
+      createdAt: new Date(),
+    };
+
+    this.activeTasks.set(task.id, task);
+    eventBus.emit('task:created', task.id);
+    getLogger().info({ taskId: task.id, description }, 'Task submitted');
+
+    this.executeTask(task).catch(err => {
+      getLogger().error({ taskId: task.id, err }, 'Task execution failed');
+    });
+
+    return task;
+  }
+
+  private async executeTask(task: Task): Promise<void> {
+    task.status = 'planning';
+    task.startedAt = new Date();
+    eventBus.emit('task:started', task.id);
+    let sessionHeld = false;
+
+    try {
+      if (this.metering) {
+        sessionHeld = this.metering.openSession();
+        if (!sessionHeld) {
+          const snap = this.metering.snapshot();
+          task.status = 'failed';
+          task.error = `Session limit reached (${snap.activeSessions}/${snap.sessionsLimit} concurrent) — queued tasks are gated by the ${this.metering.currentTier} plan`;
+          eventBus.emit('task:failed', task.id, task.error);
+          getLogger().warn({ taskId: task.id, error: task.error }, 'Task blocked by metering session limit');
+          return;
+        }
+      }
+
+      if (this.consent) {
+        const result = await this.consent.request(`Execute task: ${task.description}`);
+        if (result !== 'granted') {
+          task.status = 'failed';
+          task.error = 'Consent denied by user';
+          eventBus.emit('task:failed', task.id, task.error);
+          getLogger().warn({ taskId: task.id }, 'Task blocked by consent gate');
+          return;
+        }
+      }
+
+      if (await this.tryFastEngine(task)) return;
+
+      const plan = await this.planner.planTask(task.id, task.description);
+
+      if (plan.needsClarification) {
+        task.status = 'pending';
+        getLogger().info({ taskId: task.id, question: plan.clarificationQuestion }, 'Task needs clarification');
+        return;
+      }
+
+      task.status = 'executing';
+      const steps: TaskStep[] = [];
+
+      for (const plannedStep of plan.steps) {
+        if (steps.length >= this.maxSteps) {
+          getLogger().warn({ taskId: task.id, maxSteps: this.maxSteps }, 'Task step budget exhausted');
+          break;
+        }
+
+        if (this.consent && (await this.consent.checkEmergencyStop())) {
+          task.status = 'cancelled';
+          task.error = 'Emergency stop armed';
+          eventBus.emit('task:cancelled', task.id);
+          getLogger().warn({ taskId: task.id }, 'Task cancelled by emergency stop');
+          return;
+        }
+
+        const step = await this.executeStep(task, plannedStep, steps.length);
+        steps.push(step);
+
+        if (step.error) {
+          task.status = 'healing';
+          const healed = await this.attemptHealing(task, plannedStep);
+          if (!healed) {
+            task.status = 'failed';
+            task.error = step.error;
+            eventBus.emit('task:failed', task.id, step.error);
+            return;
+          }
+          task.status = 'executing';
+        }
+      }
+
+      const result: TaskResult = {
+        summary: `Completed: ${task.description}`,
+        output: null,
+        steps,
+        totalTimeMs: Date.now() - task.startedAt.getTime(),
+      };
+
+      task.status = 'completed';
+      task.completedAt = new Date();
+      task.result = result;
+      eventBus.emit('task:completed', task.id, result);
+
+      await this.recordExecution(task, steps);
+
+    } catch (err: any) {
+      task.status = 'failed';
+      task.error = err.message;
+      eventBus.emit('task:failed', task.id, err.message);
+    } finally {
+      if (sessionHeld) this.metering?.closeSession();
+    }
+  }
+
+  private async executeStep(task: Task, plannedStep: PlannedStep, index: number): Promise<TaskStep> {
+    const step: TaskStep = {
+      description: plannedStep.description,
+      action: plannedStep.action,
+      params: plannedStep.params,
+      startedAt: new Date(),
+      completedAt: new Date(),
+    };
+
+    getLogger().info({ taskId: task.id, step: index, action: plannedStep.action }, 'Executing step');
+
+    try {
+      switch (plannedStep.action) {
+        case 'think':
+          step.result = await this.thinkStep(task.description, plannedStep.params);
+          break;
+        case 'navigate':
+        case 'click':
+        case 'type':
+        case 'scroll':
+        case 'extract':
+          step.result = await this.executeDesktopStep(task, plannedStep);
+          break;
+        case 'open_app':
+        case 'open_chrome':
+        case 'app_click':
+        case 'app_click_selector':
+        case 'app_type':
+        case 'app_key':
+        case 'app_hotkey':
+        case 'app_scroll':
+        case 'read_screen':
+        case 'chrome_evaluate':
+          step.result = await this.executeRealDesktopStep(task, plannedStep);
+          break;
+        case 'web_search':
+          step.result = await this.webSearchStep(plannedStep);
+          break;
+        case 'file_read':
+          if (!this.workspace) throw new Error('Workspace not configured');
+          step.result = await this.workspace.read(String(plannedStep.params?.path || ''));
+          break;
+        case 'file_write':
+          if (!this.workspace) throw new Error('Workspace not configured');
+          const written = await this.workspace.write(
+            String(plannedStep.params?.path || ''),
+            String(plannedStep.params?.content ?? ''),
+          );
+          step.result = `Wrote ${written.bytes} bytes to ${written.path}`;
+          break;
+        case 'search':
+          const searchResults = await this.knowledge.search(String(plannedStep.params?.query || ''));
+          step.result = JSON.stringify(searchResults.map(n => ({ id: n.id, title: n.title })));
+          break;
+        case 'repo_list':
+          if (!this.repos) throw new Error('Repos not configured');
+          step.result = JSON.stringify(
+            await this.repos.list(
+              String(plannedStep.params?.repo || ''),
+              plannedStep.params?.path ? String(plannedStep.params.path) : '.',
+            ),
+          );
+          break;
+        case 'repo_read':
+          if (!this.repos) throw new Error('Repos not configured');
+          step.result = await this.repos.read(
+            String(plannedStep.params?.repo || ''),
+            String(plannedStep.params?.path || ''),
+          );
+          break;
+        case 'repo_write':
+          if (!this.repos) throw new Error('Repos not configured');
+          const repoWrite = await this.repos.write(
+            String(plannedStep.params?.repo || ''),
+            String(plannedStep.params?.path || ''),
+            String(plannedStep.params?.content ?? ''),
+          );
+          step.result = `Wrote ${repoWrite.bytes} bytes to ${repoWrite.path}`;
+          break;
+        case 'repo_run':
+          if (!this.repos) throw new Error('Repos not configured');
+          const runRes = await this.repos.run(
+            String(plannedStep.params?.repo || ''),
+            String(plannedStep.params?.command || ''),
+            Number(plannedStep.params?.timeoutMs || 120000),
+          );
+          const runOut = [runRes.stdout, runRes.stderr].filter(Boolean).join('\n');
+          step.result = runRes.timedOut
+            ? `Command timed out (${String(plannedStep.params?.timeoutMs || 120000)}ms). Partial output:\n${runOut}`
+            : `Exit code ${runRes.code}${runOut ? `\n${runOut}` : ''}`;
+          break;
+        case 'repo_status':
+          if (!this.repos) throw new Error('Repos not configured');
+          if (plannedStep.params?.repo) {
+            step.result = JSON.stringify(await this.repos.gitStatus(String(plannedStep.params.repo)));
+          } else {
+            step.result = JSON.stringify(await this.repos.statusAll());
+          }
+          break;
+        case 'repo_open':
+          if (!this.repos) throw new Error('Repos not configured');
+          const target = this.repos.resolveRepo(String(plannedStep.params?.repo || ''));
+          const { command, args } = this.repos.openInEditor(target.name);
+          if (this.realDesktop) {
+            step.result = await this.realDesktop.openApp(command, [...args, '--new-window']);
+          } else {
+            if (!launchApp(command, args)) throw new Error(`Could not open editor for ${target.name}`);
+            step.result = `Opened ${target.name} (${command})`;
+          }
+          break;
+        case 'wait':
+          const ms = Number(plannedStep.params?.ms || 1000);
+          await new Promise(r => setTimeout(r, ms));
+          step.result = `Waited ${ms}ms`;
+          break;
+        case 'skill':
+          step.result = await this.executeSkillStep(task, plannedStep);
+          break;
+        case 'skill_learn':
+          step.result = this.recordSkillInvocation(
+            String(plannedStep.params?.skill ?? 'learned'),
+            Date.now(),
+            plannedStep.params?.result !== 'error',
+            String(plannedStep.params?.note ?? 'recorded'),
+          );
+          break;
+        case 'video_tool':
+          if (!this.openmontage) throw new Error('OpenMontage bridge not configured');
+          const toolName = String(plannedStep.params?.tool || '');
+          if (!toolName) throw new Error('video_tool needs params.tool');
+          const toolParams = (plannedStep.params?.inputs as Record<string, unknown>) || {};
+          const toolRes = await this.openmontage.runTool(toolName, toolParams);
+          step.result = toolRes.success
+            ? JSON.stringify({ data: toolRes.data, artifacts: toolRes.artifacts, cost_usd: toolRes.cost_usd, duration_seconds: toolRes.duration_seconds })
+            : `Tool ${toolName} failed: ${toolRes.error || 'unknown error'}`;
+          break;
+        case 'video_produce':
+          if (!this.videoProducer) throw new Error('VideoProducer not configured');
+          const brief: VideoBrief = {
+            description: String(plannedStep.params?.description || plannedStep.params?.brief || task.description),
+            title: plannedStep.params?.title ? String(plannedStep.params.title) : undefined,
+            voiceProfile: plannedStep.params?.voiceProfile ? String(plannedStep.params.voiceProfile) : undefined,
+            style: plannedStep.params?.style ? String(plannedStep.params.style) : undefined,
+          };
+          const produced = await this.videoProducer.produceVideo(brief);
+          step.result = JSON.stringify({
+            videoPath: produced.videoPath,
+            narrationPath: produced.narrationPath,
+            title: produced.script.title,
+          });
+          break;
+        default:
+          step.result = `Unknown action: ${plannedStep.action}`;
+      }
+
+      this.vault?.log('step_executed', plannedStep.action, plannedStep.params, step.result || 'ok');
+    } catch (err: any) {
+      step.error = err.message;
+      this.vault?.log('step_failed', plannedStep.action, plannedStep.params, err.message);
+    }
+
+    step.completedAt = new Date();
+    return step;
+  }
+
+  private async tryFastEngine(task: Task): Promise<boolean> {
+    if (!this.bridge || !this.bridge.isReady()) return false;
+    const engine = process.env['UMBRA_ENGINE'] || 'browseruse';
+    if (engine !== 'browseruse') return false; // desktop2 / ghost modes use the real-desktop loop
+
+    if (this.consent && (await this.consent.checkEmergencyStop())) {
+      task.status = 'cancelled';
+      task.error = 'Emergency stop armed';
+      eventBus.emit('task:cancelled', task.id);
+      return true;
+    }
+
+    try {
+      await this.agentDesktop?.ensure();
+    } catch (err: any) {
+      getLogger().warn({ err: err.message }, 'Fast engine: agent desktop unavailable');
+    }
+
+    task.status = 'executing';
+    const steps: TaskStep[] = [];
+    const stopFile = path.join(process.env['USERPROFILE'] || '.', '.umbra', 'emergency-stop');
+
+    const run = (model: 'fast' | 'reasoning') => this.bridge!.submit({
+      task: task.description,
+      stopFile,
+      maxSteps: 25,
+      model,
+      onProgress: (info, n) => {
+        if (!info) return;
+        const s: TaskStep = {
+          description: `Step ${n}: ${info}`,
+          action: 'web_research',
+          params: {},
+          startedAt: new Date(),
+          completedAt: new Date(),
+          result: undefined,
+        };
+        steps.push(s);
+        eventBus.emit('task:progress', task.id, n);
+      },
+    });
+
+    let res = await run('fast');
+    if (!res.ok && !res.aborted) {
+      getLogger().warn({ err: res.error }, 'Fast engine failed with fast model — retrying with reasoning model');
+      res = await run('reasoning');
+    }
+
+    if (res.aborted) {
+      task.status = 'cancelled';
+      task.error = 'Emergency stop armed';
+      eventBus.emit('task:cancelled', task.id);
+      return true;
+    }
+
+    if (res.ok && res.result) {
+      const final: TaskStep = {
+        description: `Researched via browser-use (${res.steps ?? '?'} steps in ${res.seconds ?? '?'}s${res.url ? `, last URL: ${res.url}` : ''})`,
+        action: 'web_research',
+        params: { task: task.description },
+        startedAt: new Date(),
+        completedAt: new Date(),
+        result: res.result,
+      };
+      steps.push(final);
+
+      const result: TaskResult = {
+        summary: res.result,
+        output: res.result,
+        steps,
+        totalTimeMs: Date.now() - task.startedAt!.getTime(),
+      };
+      task.status = 'completed';
+      task.completedAt = new Date();
+      task.result = result;
+      eventBus.emit('task:completed', task.id, result);
+      await this.recordExecution(task, steps);
+      this.vault?.log('task_completed', task.description, { engine: 'browser-use', steps: res.steps, seconds: res.seconds }, res.result);
+    } else {
+      task.status = 'failed';
+      task.error = res.error || 'Fast engine failed';
+      eventBus.emit('task:failed', task.id, task.error);
+    }
+    return true;
+  }
+
+  private async webSearchStep(plannedStep: PlannedStep): Promise<string> {
+    const query = String(plannedStep.params?.query || '');
+    if (!query) return 'Web search needs a query';
+    if (!this.desktop2) return 'No browser available for web search';
+
+    const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+    await this.desktop2.executeAction('navigate', { url });
+    getLogger().info({ query, url }, 'Agent: opened web search');
+    return `Opened web search for "${query}"`;
+  }
+
+  private async thinkStep(instruction: string, params: Record<string, unknown>): Promise<string> {
+    const knowledgeContext = await this.knowledge.search(instruction);
+    const rawContext = JSON.stringify(knowledgeContext.slice(0, 3).map(n => ({ id: n.id, title: n.title })));
+
+    // Graphify/Caveman: densify large knowledge context before the LLM call.
+    let contextBlock = rawContext;
+    if (this.graphify && rawContext.length > 1200) {
+      try {
+        const compressed = await this.graphify.compress(rawContext, 'think');
+        if (compressed.savings > 0.2) {
+          contextBlock = `[graphified: ${compressed.originalTokens}→${compressed.promptTokens} tokens, ${compressed.cliques.length} cliques]\n${compressed.prompt}`;
+        }
+      } catch (err: any) {
+        getLogger().debug({ err: err.message }, 'Graphify compression failed — using raw context');
+      }
+    }
+
+    const messages: LLMMessage[] = [
+      { role: 'system', content: `You are Umbra OS. Think through this step and provide the output.
+Relevant knowledge: ${contextBlock}` },
+      { role: 'user', content: `${instruction}\nParams: ${JSON.stringify(params)}` },
+    ];
+
+    const result = await this.llm.complete(messages, 'reasoning', { temperature: 0.3 });
+    return result.content;
+  }
+
+  private async executeSkillStep(task: Task, plannedStep: PlannedStep): Promise<string> {
+    if (!this.skillRouter) return '[Skill system not configured]';
+
+    const intent = String(plannedStep.params?.intent ?? plannedStep.params?.query ?? task.description);
+    const startedAt = Date.now();
+    const route = this.skillRouter.route(intent);
+
+    if (!route.skill) {
+      const msg = route.candidates.length > 0
+        ? `No confident skill match (best ${route.candidates[0].id} @ ${route.score.toFixed(2)} < 0.4). Candidates: ${route.candidates.map(c => c.id).join(', ')}`
+        : 'No matching skill found';
+      this.recordSkillInvocation('none', startedAt, false, msg);
+      return msg;
+    }
+
+    const skill = route.skill;
+    const parts: string[] = [
+      `Skill: ${skill.id} (${skill.name}) — ${skill.purpose}`,
+      `Success criteria: ${skill.success}`,
+    ];
+
+    // Dispatch to a registered MCP tool when the plan names one explicitly.
+    const tool = plannedStep.params?.tool ? String(plannedStep.params.tool) : undefined;
+    if (tool && this.mcpRouter) {
+      const input = (plannedStep.params?.input as Record<string, unknown>) || {};
+      const mcpResult = await this.mcpRouter.call(skill.id, tool, input);
+      if (mcpResult.ok) {
+        parts.push(`Tool ${skill.id}.${tool} [${mcpResult.transport}, ${mcpResult.latencyMs}ms]: ${JSON.stringify(mcpResult.output).substring(0, 2000)}`);
+      } else {
+        parts.push(`Tool ${skill.id}.${tool} failed: ${mcpResult.error || 'unknown error'}`);
+      }
+    }
+
+    // Ground the answer in the skill definition via the reasoning model.
+    if (!this.llm) {
+      this.recordSkillInvocation(skill.id, startedAt, true, parts.join('\n'));
+      return parts.join('\n');
+    }
+
+    try {
+      const messages: LLMMessage[] = [
+        {
+          role: 'system',
+          content: `You are the "${skill.name}" skill in Umbra OS.\nPurpose: ${skill.purpose}\nSuccess criteria: ${skill.success}\nProduce a focused, actionable response for the user's request.`,
+        },
+        { role: 'user', content: `Request: ${intent}` },
+      ];
+      const result = await this.llm.complete(messages, 'reasoning', { temperature: 0.3 });
+      this.recordSkillInvocation(skill.id, startedAt, true, result.content, result.totalTokens);
+      return [...parts, result.content].join('\n');
+    } catch (err: any) {
+      this.recordSkillInvocation(skill.id, startedAt, false, err.message);
+      return [...parts, `Skill reasoning failed: ${err.message}`].join('\n');
+    }
+  }
+
+  private recordSkillInvocation(skill: string, startedAt: number, ok: boolean, note: string, tokens?: number): string {
+    if (!this.skillRecorder) return note;
+    this.skillRecorder.record({
+      skill,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+      tokens,
+      result: ok ? 'success' : 'error',
+    });
+    return note;
+  }
+
+  private async executeDesktopStep(task: Task, plannedStep: PlannedStep): Promise<string> {
+    if (this.realDesktop && (process.env['UMBRA_ENGINE'] === 'ghost')) {
+      return this.executeGhostStep(task, plannedStep);
+    }
+    if (!this.desktop2) return this.executeSwarmStep(plannedStep);
+
+    await this.agentDesktop?.ensure();
+
+    const { action, params } = this.normalizeAction(plannedStep.action, plannedStep.params);
+    const isUiAction = ['navigate', 'click', 'clickSelector', 'type', 'typeInto', 'pressKey', 'hotkey', 'scroll', 'extract'].includes(action);
+
+    let beforeShot: string | null = null;
+    let beforeSnap: string | null = null;
+    if (isUiAction) {
+      beforeShot = await this.captureScreenshot();
+      beforeSnap = await this.desktop2.getAccessibilitySnapshot();
+    }
+
+    const result = await this.desktop2.executeAction(action, params);
+
+    if (!isUiAction) return result;
+
+    const afterShot = await this.captureScreenshot();
+    const afterSnap = await this.desktop2.getAccessibilitySnapshot();
+    const verification = await this.verifyStep(plannedStep.description, beforeShot, afterShot);
+    const changed = beforeSnap !== afterSnap;
+
+    const parts = [
+      result,
+      changed ? 'Page state changed after action' : 'Page state unchanged after action',
+      verification.reason ? `Verification: ${verification.verified ? 'OK' : 'FAILED'} — ${verification.reason}` : '',
+    ];
+    return parts.filter(Boolean).join(' | ');
+  }
+
+  /** Ghost mode: run browser steps against the REAL Chrome profile on Desktop 2,
+   *  so the agent can use the user's logged-in accounts while they work on the
+   *  main desktop. Falls back to the sandbox engine if the ghost is unavailable. */
+  private async executeGhostStep(task: Task, plannedStep: PlannedStep): Promise<string> {
+    if (!this.realDesktop) return '[Ghost desktop not configured — using sandbox]';
+
+    const { action, params } = this.normalizeAction(plannedStep.action, plannedStep.params);
+
+    try {
+      switch (action) {
+        case 'navigate':
+          return await this.realDesktop.openChrome(String(params.url || ''));
+        case 'click':
+          if (params.selector) return await this.realDesktop.clickSelector(String(params.selector));
+          return await this.realDesktop.click(Number(params.x || 0), Number(params.y || 0));
+        case 'type':
+          if (params.selector) {
+            const clicked = await this.realDesktop.clickSelector(String(params.selector));
+            if (!clicked) return `Selector not found: ${params.selector}`;
+            await new Promise(r => setTimeout(r, 150));
+          }
+          return await this.realDesktop.type(String(params.text || ''));
+        case 'scroll':
+          return await this.realDesktop.scroll(Number(params.deltaX || 0), Number(params.deltaY || 0));
+        case 'extract':
+          return await this.realDesktop.evaluate(`(() => {
+            const sel = ${params.selector ? JSON.stringify(String(params.selector)) : 'null'};
+            const el = sel ? document.querySelector(sel) : document.body;
+            if (!el) return 'No element';
+            return (el.innerText || el.textContent || '').trim().substring(0, ${params.maxChars ? Number(params.maxChars) : 8000});
+          })()`);
+        default:
+          return await this.realDesktop.executeAction(action, params);
+      }
+    } catch (err: any) {
+      getLogger().warn({ action, err: err.message }, 'Ghost step failed — falling back to sandbox desktop');
+      if (!this.desktop2) throw err;
+      return this.desktop2.executeAction(action, params);
+    }
+  }
+
+  private async executeRealDesktopStep(task: Task, plannedStep: PlannedStep): Promise<string> {
+    if (!this.realDesktop) return '[Real desktop mode not configured]';
+
+    const { action, params } = plannedStep;
+    const isUiAction = ['app_click', 'app_click_selector', 'app_type', 'app_key', 'app_hotkey', 'app_scroll', 'open_app', 'open_chrome'].includes(action);
+
+    let beforeShot: string | null = null;
+    if (isUiAction) {
+      const buf = await this.realDesktop.captureWindow();
+      beforeShot = buf ? buf.toString('base64') : null;
+    }
+
+    const result = await this.realDesktop.executeAction(action, params);
+
+    if (!isUiAction) return result;
+
+    const afterBuf = await this.realDesktop.captureWindow();
+    const afterShot = afterBuf ? afterBuf.toString('base64') : null;
+    const verification = await this.verifyRealStep(plannedStep.description, beforeShot, afterShot);
+
+    const parts = [
+      result,
+      verification.reason ? `Verification: ${verification.verified ? 'OK' : 'FAILED'} — ${verification.reason}` : '',
+    ];
+    return parts.filter(Boolean).join(' | ');
+  }
+
+  private async verifyRealStep(description: string, before: string | null, after: string | null): Promise<{ verified: boolean; reason: string }> {
+    if (!after) return { verified: true, reason: 'no screenshot available — skipped verification' };
+    if (!this.llm) return { verified: true, reason: 'no LLM available — skipped verification' };
+
+    const messages: LLMMessage[] = [
+      {
+        role: 'system',
+        content: 'You are a computer-use verifier for an AI agent controlling a Windows desktop (apps and browser). Look at the screenshots (before/after an action) and decide if the action succeeded. Reply with ONLY a JSON object like {"verified": true, "reason": "short reason"}. No markdown, no prose.',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `Did the action succeed?\nAction: ${description}` },
+          ...(before ? [{ type: 'image' as const, image: before, detail: 'low' as const }] : []),
+          { type: 'image', image: after, detail: 'low' },
+        ],
+      },
+    ];
+
+    try {
+      const result = await this.llm.complete(messages, 'vision', { temperature: 0.1 });
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          return { verified: parsed.verified !== false, reason: String(parsed.reason || '') };
+        } catch { }
+      }
+      return { verified: true, reason: result.content.substring(0, 200) };
+    } catch (err: any) {
+      getLogger().debug({ err: err.message }, 'VLM verification failed, assuming verified');
+      return { verified: true, reason: 'VLM verify unavailable' };
+    }
+  }
+
+  private async executeSwarmStep(plannedStep: PlannedStep): Promise<string> {    if (!this.swarm) return '[No swarm available — simulation]';
+
+    const swarmId = await this.swarm.acquireSwarm('generic', 'normal');
+    try {
+      await this.swarm.assignTask(swarmId, {
+        id: crypto.randomUUID?.() || `${Date.now()}`,
+        action: plannedStep.action,
+        params: plannedStep.params,
+      });
+      return `Executed on swarm ${swarmId}`;
+    } finally {
+      this.swarm.releaseSwarm(swarmId);
+    }
+  }
+
+  private normalizeAction(action: string, params: Record<string, unknown>): { action: string; params: Record<string, unknown> } {
+    const p = { ...params };
+
+    if (action === 'navigate') {
+      const url = String(p.url || '');
+      if (url && url !== 'about:blank' && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+        p.url = `https://${url}`;
+      }
+      return { action: 'navigate', params: p };
+    }
+
+    if (action === 'click') {
+      if (p.selector) return { action: 'clickSelector', params: p };
+      return { action: 'click', params: p };
+    }
+
+    if (action === 'type') {
+      if (p.selector) return { action: 'typeInto', params: p };
+      return { action: 'type', params: p };
+    }
+
+    return { action, params: p };
+  }
+
+  private async captureScreenshot(): Promise<string | null> {
+    if (!this.desktop2) return null;
+    const buf = await this.desktop2.screenshot();
+    return buf ? buf.toString('base64') : null;
+  }
+
+  private async verifyStep(description: string, before: string | null, after: string | null): Promise<{ verified: boolean; reason: string }> {
+    if (!after) return { verified: true, reason: 'no screenshot available — skipped verification' };
+    if (!this.llm) return { verified: true, reason: 'no LLM available — skipped verification' };
+
+    const messages: LLMMessage[] = [
+      {
+        role: 'system',
+        content: 'You are a computer-use verifier for an AI agent controlling a browser. Look at the screenshot showing the page after the action and decide if the action succeeded. Reply with ONLY a JSON object like {"verified": true, "reason": "short reason"}. No markdown, no prose.',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `Did the action succeed?\nAction: ${description}` },
+          { type: 'image', image: after, detail: 'low' },
+        ],
+      },
+    ];
+
+    try {
+      const result = await this.llm.complete(messages, 'vision', { temperature: 0.1 });
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          return { verified: parsed.verified !== false, reason: String(parsed.reason || '') };
+        } catch { }
+      }
+
+      const low = result.content.toLowerCase();
+      const verified = /success|verified|succeeded|completed/.test(low) && !/fail|error|unsuccessful|not verified/.test(low);
+      return { verified, reason: result.content.substring(0, 200) };
+    } catch (err: any) {
+      getLogger().debug({ err: err.message }, 'VLM verification failed, assuming verified');
+      return { verified: true, reason: 'VLM verify unavailable' };
+    }
+  }
+
+  private async attemptHealing(task: Task, failedStep: PlannedStep): Promise<boolean> {
+    getLogger().info({ taskId: task.id }, 'Attempting self-healing');
+    eventBus.emit('healing:recovered', task.id);
+
+    if (this.desktop2) {
+      try {
+        const recovered = await this.desktop2.recover();
+        if (recovered) return true;
+      } catch (err: any) {
+        getLogger().debug({ err: err.message }, 'Desktop2 recovery failed');
+      }
+    }
+
+    if (!this.healer) return false;
+    try {
+      const recovered = await this.healer.heal(failedStep.description);
+      return recovered;
+    } catch {
+      return false;
+    }
+  }
+
+  private async recordExecution(task: Task, steps: TaskStep[]): Promise<void> {
+    if (this.memory) {
+      this.memory.logActivity(task.id, task.description, 'completed', steps.length);
+    }
+
+    await this.knowledge.learnFromExecution(
+      task.description,
+      steps.map(s => s.description),
+      steps.map(s => s.result || s.error || '').join('\n')
+    );
+  }
+
+  async cancelTask(taskId: string): Promise<void> {
+    const task = this.activeTasks.get(taskId);
+    if (task) {
+      task.status = 'cancelled';
+      eventBus.emit('task:cancelled', taskId);
+    }
+  }
+
+  getActiveTasks(): Task[] {
+    return Array.from(this.activeTasks.values()).filter(t => t.status === 'pending' || t.status === 'planning' || t.status === 'executing');
+  }
+
+  getTask(taskId: string): Task | undefined {
+    return this.activeTasks.get(taskId);
+  }
+}

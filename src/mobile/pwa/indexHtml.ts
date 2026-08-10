@@ -1,0 +1,387 @@
+/**
+ * The Umbra smartphone PWA — embedded so it ships with the compiled OS
+ * (no asset-copy step). Pairing uses encrypted QR (ECDH + AES-256-GCM),
+ * commands and the compressed live view run over the encrypted relay, and
+ * the client attempts a direct WebRTC data channel when the PC reports a
+ * media backend. Zero central routing.
+ *
+ * NOTE: the inline JS below deliberately avoids backtick template literals
+ * and `${}` so it can live inside this TypeScript template literal.
+ */
+
+export const pwaHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="theme-color" content="#0f1117"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<title>Umbra — Remote</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1117;color:#e6e6e6;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+header{padding:14px 16px;background:#161a22;border-bottom:1px solid #22262f;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5}
+header h1{font-size:16px;font-weight:600}
+.dot{width:9px;height:9px;border-radius:50%;background:#e5484d;display:inline-block}
+.dot.ok{background:#30a46c}
+main{padding:16px;max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.card{background:#161a22;border:1px solid #22262f;border-radius:12px;padding:14px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#9ba1aa;margin-bottom:10px}
+input,textarea,button{font:inherit;color:inherit}
+input[type=text],textarea{width:100%;background:#0f1117;border:1px solid #2a2f3a;border-radius:8px;padding:10px}
+textarea{min-height:64px;resize:vertical}
+button{background:#4f46e5;border:0;color:#fff;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:600}
+button.secondary{background:#262b36}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+video{width:100%;border-radius:10px;background:#000;display:block}
+img#live{width:100%;border-radius:10px;background:#000;display:block}
+#scanBox{position:relative;overflow:hidden;border-radius:10px;background:#000}
+#scanBox video{min-height:180px;object-fit:cover}
+#log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#9ba1aa;white-space:pre-wrap;max-height:180px;overflow-y:auto}
+.hidden{display:none}
+.muted{color:#9ba1aa;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="statusDot"></span>
+  <h1>Umbra OS <span class="muted">remote</span></h1>
+  <span class="muted" id="statusText">not paired</span>
+</header>
+<main>
+
+  <div class="card" id="pairCard">
+    <h2>Pair with your PC</h2>
+    <div class="row">
+      <button id="scanBtn">Scan QR</button>
+      <button class="secondary" id="pasteBtn">Paste payload</button>
+    </div>
+    <div id="scanBox" class="hidden"><video id="scanner" playsinline muted></video></div>
+    <div id="pasteBox" class="hidden" style="margin-top:10px">
+      <textarea id="payloadInput" placeholder='Paste the pairing payload JSON here, e.g. {"sessionId":"...","host":"192.168.1.5","port":9444,...}'></textarea>
+      <div class="row" style="margin-top:8px"><button id="payloadOk">Connect</button></div>
+    </div>
+    <div id="deviceNameRow" style="margin-top:10px">
+      <input type="text" id="deviceName" placeholder="Device name (e.g. Pixel 9)" value="Phone"/>
+    </div>
+    <div id="pairingErr" class="muted" style="color:#e5484d;margin-top:8px"></div>
+  </div>
+
+  <div class="card" id="viewCard" style="display:none">
+    <h2>Live view <span class="muted">(compressed frames)</span></h2>
+    <img id="live" alt="live" width="100%"/>
+    <div class="row" style="margin-top:8px">
+      <button id="btnScreenshot">Screenshot</button>
+      <button class="secondary" id="btnSub">Subscribe stream</button>
+      <button class="secondary" id="btnTask">Submit task</button>
+    </div>
+    <div style="margin-top:10px">
+      <input type="text" id="taskInput" placeholder="Describe a task for the agent..."/>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Command console</h2>
+    <div class="row">
+      <button class="secondary" data-cmd='{"action":"screenshot"}'>Shot</button>
+      <button class="secondary" data-cmd='{"action":"status"}'>Status</button>
+      <button class="secondary" data-cmd='{"action":"getSessions"}'>Sessions</button>
+      <button class="secondary" data-cmd='{"action":"getMacros"}'>Macros</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="actionInput" placeholder='{"action":"...","params":{...}}'/>
+      <button id="btnSend">Send</button>
+    </div>
+    <div class="muted" style="margin-top:6px">Every action is consent-gated on the PC. Emergency stop: create ~/.umbra/emergency-stop.</div>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+
+</main>
+
+<script>
+(function(){
+"use strict";
+var logEl = document.getElementById('log');
+var statusDot = document.getElementById('statusDot');
+var statusText = document.getElementById('statusText');
+function log(msg){ logEl.textContent = new Date().toISOString().slice(11,19) + '  ' + msg + '\\n' + logEl.textContent.slice(0, 4000); }
+function setStatus(text, ok){ statusText.textContent = text; statusDot.className = 'dot' + (ok ? ' ok' : ''); }
+
+// ── base64 (browser) helpers ────────────────────────────────
+function bytesToB64(bytes){
+  var bin = '';
+  var CH = 0x8000;
+  for (var i = 0; i < bytes.length; i += CH){
+    var chunk = bytes.subarray(i, i + CH);
+    for (var j = 0; j < chunk.length; j++){ bin += String.fromCharCode(chunk[j]); }
+  }
+  return btoa(bin);
+}
+function b64ToBytes(b64){
+  var bin = atob(b64);
+  var out = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++){ out[i] = bin.charCodeAt(i); }
+  return out;
+}
+function pemToBuf(pem){
+  var body = pem.replace(/-----BEGIN [^-]+-----/,'').replace(/-----END [^-]+-----/,'').replace(/\\s/g,'');
+  return b64ToBytes(body);
+}
+function bufToPem(buf){
+  var b64 = bytesToB64(buf);
+  var lines = [];
+  for (var i = 0; i < b64.length; i += 64){ lines.push(b64.slice(i, i + 64)); }
+  return '-----BEGIN PUBLIC KEY-----\\n' + lines.join('\\n') + '\\n-----END PUBLIC KEY-----';
+}
+
+// ── pairing state ───────────────────────────────────────────
+var pair = null;          // QR payload
+var aesKey = null;        // CryptoKey (AES-GCM)
+var deviceId = null;
+var ws = null;
+var subscribed = false;
+var reqSeq = 0;
+var pending = {};
+
+// ── camera scanner ──────────────────────────────────────────
+var scannerStream = null;
+document.getElementById('scanBtn').addEventListener('click', function(){
+  document.getElementById('scanBox').classList.remove('hidden');
+  var video = document.getElementById('scanner');
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(function(stream){
+      scannerStream = stream;
+      video.srcObject = stream;
+      video.play();
+      tryScan();
+    }).catch(function(e){ log('Camera unavailable: ' + e.message + ' — use paste instead.'); });
+  } else {
+    log('Camera not supported on this device — use paste instead.');
+  }
+  if ('BarcodeDetector' in window){
+    try {
+      var detector = new BarcodeDetector({formats:['qr_code']});
+      var iv = setInterval(function(){
+        detector.detect(video).then(function(codes){
+          for (var i = 0; i < codes.length; i++){
+            var raw = codes[i].rawValue;
+            if (raw && raw.indexOf('sessionId') !== -1){ stopScanner(); connectFromPayload(raw); clearInterval(iv); return; }
+          }
+        }).catch(function(){});
+      }, 500);
+    } catch(e){ log('BarcodeDetector unavailable.'); }
+  }
+});
+function stopScanner(){
+  if (scannerStream){ scannerStream.getTracks().forEach(function(t){ t.stop(); }); scannerStream = null; }
+  document.getElementById('scanBox').classList.add('hidden');
+}
+document.getElementById('pasteBtn').addEventListener('click', function(){
+  document.getElementById('pasteBox').classList.toggle('hidden');
+});
+document.getElementById('payloadOk').addEventListener('click', function(){
+  var raw = document.getElementById('payloadInput').value.trim();
+  connectFromPayload(raw);
+});
+
+function connectFromPayload(raw){
+  try {
+    pair = JSON.parse(raw);
+    if (!pair.sessionId || !pair.host || !pair.port || !pair.publicKeyPem){ throw new Error('invalid payload'); }
+    log('Pairing payload parsed (host ' + pair.host + ':' + pair.port + ')');
+    startPairing();
+  } catch(e){
+    document.getElementById('pairingErr').textContent = 'Invalid pairing payload: ' + e.message;
+    log('Pairing failed: ' + e.message);
+  }
+}
+
+// ── WebCrypto: ECDH → AES-GCM key ───────────────────────────
+function deriveKey(peerSpki){
+  return crypto.subtle.generateKey({name:'ECDH', namedCurve:'P-256'}, true, ['deriveBits'])
+    .then(function(keys){
+      return crypto.subtle.importKey('spki', pemToBuf(peerSpki), {name:'ECDH', namedCurve:'P-256'}, false, [])
+        .then(function(peerPub){
+          return {keys: keys, peerPub: peerPub};
+        });
+    })
+    .then(function(ctx){
+      return crypto.subtle.deriveBits({name:'ECDH', public: ctx.peerPub}, ctx.keys.privateKey, 256)
+        .then(function(bits){
+          return crypto.subtle.importKey('raw', ctx.keys.publicKey, {name:'ECDH', namedCurve:'P-256'}, false, [])
+            .then(function(ignored){ return {bits: bits, pub: ctx.keys.publicKey}; });
+        });
+    })
+    .then(function(ctx){
+      return crypto.subtle.digest('SHA-256', ctx.bits).then(function(hash){
+        return crypto.subtle.importKey('raw', hash, {name:'AES-GCM'}, false, ['encrypt','decrypt']).then(function(k){
+          return {key: k, pubSpki: ctx.pub};
+        });
+      });
+    })
+    .then(function(r){
+      return crypto.subtle.exportKey('spki', r.pubSpki).then(function(spki){ return {key: r.key, pubPem: bufToPem(new Uint8Array(spki))}; });
+    });
+}
+
+// ── AEAD codec (wire-compatible with Node EncryptedChannel) ─
+function encText(text){
+  var iv = crypto.getRandomValues(new Uint8Array(12));
+  var data = new TextEncoder().encode(text);
+  return crypto.subtle.encrypt({name:'AES-GCM', iv: iv}, aesKey, data).then(function(combined){
+    var c = new Uint8Array(combined);
+    return {iv: bytesToB64(iv), tag: bytesToB64(c.subarray(c.length-16)), data: bytesToB64(c.subarray(0, c.length-16)), v: 1};
+  });
+}
+function decMsg(enc){
+  var iv = b64ToBytes(enc.iv);
+  var tag = b64ToBytes(enc.tag);
+  var data = b64ToBytes(enc.data);
+  var combined = new Uint8Array(data.length + 16);
+  combined.set(data, 0);
+  combined.set(tag, data.length);
+  return crypto.subtle.decrypt({name:'AES-GCM', iv: iv}, aesKey, combined).then(function(pt){
+    return JSON.parse(new TextDecoder().decode(pt));
+  });
+}
+
+// ── signaling + pairing ─────────────────────────────────────
+function startPairing(){
+  setStatus('connecting…', false);
+  deriveKey(pair.publicKeyPem).then(function(r){
+    var url2 = (location.protocol === 'https:' ? 'wss://' : 'ws://') + pair.host + ':' + pair.port;
+    ws = new WebSocket(url2);
+    ws.onopen = function(){
+      log('Signaling connected — pairing…');
+      var name = document.getElementById('deviceName').value || 'Phone';
+      ws.send(JSON.stringify({type:'pair', sessionId: pair.sessionId, name: name, devicePublicKeyPem: r.pubPem}));
+    };
+    ws.onmessage = function(ev){
+      var msg = JSON.parse(ev.data);
+      if (msg.type === 'paired'){
+        deviceId = msg.deviceId;
+        aesKey = r.key;
+        log('Paired as ' + msg.deviceId);
+        hello();
+      } else if (msg.type === 'welcome'){
+        setStatus('connected', true);
+        log('Welcome: relayFps=' + msg.relayFps + ' webrtc=' + msg.webrtc);
+        document.getElementById('pairCard').style.display = 'none';
+        document.getElementById('viewCard').style.display = 'block';
+        if (msg.webrtc === true){ tryWebRTC(msg.stunServers || []); }
+      } else if (msg.type === 'enc'){
+        handleEnc(msg.enc);
+      } else if (msg.type === 'pair-failed' || msg.type === 'error'){
+        log('Error: ' + (msg.error || 'unknown'));
+        setStatus('pairing failed', false);
+      }
+    };
+    ws.onclose = function(){ setStatus('disconnected', false); log('Signaling closed'); };
+    ws.onerror = function(){ log('Signaling error'); setStatus('connection error', false); };
+  }).catch(function(e){ log('Key derivation failed: ' + e.message); });
+}
+
+function hello(){
+  ws.send(JSON.stringify({type:'hello', deviceId: deviceId}));
+}
+
+function sendEnc(payload){
+  if (!ws || ws.readyState !== 1 || !aesKey) return;
+  encText(JSON.stringify(payload)).then(function(enc){
+    ws.send(JSON.stringify({type:'enc', enc: enc}));
+  });
+}
+
+function handleEnc(enc){
+  if (!aesKey) return;
+  decMsg(enc).then(function(inner){
+    if (inner.t === 'frame'){
+      if (inner.image){
+        var img = document.getElementById('live');
+        img.src = 'data:image/jpeg;base64,' + inner.image;
+      }
+    } else if (inner.t === 'result'){
+      var p = pending[inner.reqId];
+      if (p){ p(inner); delete pending[inner.reqId]; }
+      log('RESULT ' + (inner.ok ? JSON.stringify(inner.result) : 'ERR: ' + inner.error));
+    } else if (inner.t === 'subscribed'){
+      subscribed = true;
+      log('Stream subscribed (fps ' + inner.fps + ')');
+    } else if (inner.t === 'pong'){
+      log('pong');
+    } else if (inner.t === 'status'){
+      log('STATUS ' + JSON.stringify(inner.status));
+    } else if (inner.t === 'webrtc-unavailable'){
+      log('WebRTC media backend unavailable — using encrypted relay.');
+    } else {
+      log('MSG ' + JSON.stringify(inner).slice(0, 200));
+    }
+  }).catch(function(e){ log('decrypt failed: ' + e.message); });
+}
+
+function command(action, params){
+  return new Promise(function(resolve){
+    var reqId = 'r' + (++reqSeq);
+    pending[reqId] = resolve;
+    sendEnc({t:'cmd', action: action, params: params || {}, reqId: reqId});
+  });
+}
+
+// ── WebRTC attempt (data channel path, falls back to relay) ─
+function tryWebRTC(stunServers){
+  if (!window.RTCPeerConnection){ return; }
+  try {
+    var pc = new RTCPeerConnection({iceServers: stunServers.map(function(u){ return {urls: u}; })});
+    var ch = pc.createDataChannel('umbra');
+    ch.onopen = function(){ log('WebRTC data channel open'); };
+    pc.onicecandidate = function(e){
+      if (e.candidate){
+        sendEnc({t:'webrtc-signal', signal:{kind:'candidate', candidate:{candidate:e.candidate.candidate, sdpMid:e.candidate.sdpMid, sdpMLineIndex:e.candidate.sdpMLineIndex}}});
+      }
+    };
+    pc.createOffer().then(function(offer){
+      return pc.setLocalDescription(offer).then(function(){
+        sendEnc({t:'webrtc-signal', signal:{kind:'offer', description:{type:offer.type, sdp:offer.sdp}}});
+      });
+    }).catch(function(){ log('WebRTC offer failed — using relay.'); });
+  } catch(e){ log('WebRTC unavailable — using relay.'); }
+}
+
+// ── UI wiring ───────────────────────────────────────────────
+document.getElementById('btnScreenshot').addEventListener('click', function(){
+  sendEnc({t:'frame'});
+});
+document.getElementById('btnSub').addEventListener('click', function(){
+  if (!subscribed){ sendEnc({t:'subscribe'}); } else { sendEnc({t:'unsubscribe'}); subscribed = false; }
+});
+document.getElementById('btnTask').addEventListener('click', function(){
+  var desc = document.getElementById('taskInput').value.trim();
+  if (!desc) return;
+  command('submitTask', {description: desc}).then(function(){ document.getElementById('taskInput').value = ''; });
+});
+document.getElementById('btnSend').addEventListener('click', function(){
+  var raw = document.getElementById('actionInput').value.trim();
+  if (!raw) return;
+  try {
+    var msg = JSON.parse(raw);
+    command(msg.action, msg.params || {}).then(function(){ document.getElementById('actionInput').value = ''; });
+  } catch(e){ log('Invalid command JSON: ' + e.message); }
+});
+var quick = document.querySelectorAll('[data-cmd]');
+for (var i = 0; i < quick.length; i++){
+  quick[i].addEventListener('click', function(){
+    var m = JSON.parse(this.getAttribute('data-cmd'));
+    command(m.action, m.params || {});
+  });
+}
+log('Umbra remote loaded. Scan the QR from your PC’s /pair page.');
+})();
+</script>
+</body>
+</html>`;

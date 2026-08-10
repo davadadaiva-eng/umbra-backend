@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.umbra/
+.venv/
+*.log
+.env
+.env.*
+temp.env
+*.db
+external/
+downloaded_files/
+__pycache__/
+mesh/target/
+mesh/.cargo/
