@@ -29,7 +29,7 @@ CORE IDEA
 TECH STACK
 ----------
 - Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
-- Jest (ts-jest) for tests — 16 suites, 114 tests, all green
+- Jest (ts-jest) for tests — 21 suites, 149 tests, all green
 - oxlint for linting — zero issues
 - better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
 - node-fetch-free: uses Node 18+ global fetch
@@ -110,7 +110,7 @@ Generated with sane defaults by ConfigManager on first run. Key sections
     compiler                     — skill native backend (none | node | tcc | clang)
     shadow, meeting, telco, docker — feature toggles + provider settings
 
-WHAT IS DONE (state: build+tests+lint green, 114 tests / 16 suites)
+WHAT IS DONE (state: build+tests+lint green, 149 tests / 21 suites)
 -------------------------------------------------------------------
 1. Agent loop: planning (with clarification), step execution (browse, desktop,
    ghost real-desktop, files, repos, video tools, web search), self-healing,

@@ -63,6 +63,8 @@ export class ExternalRegistrySync {
     this.registry.register(connector.id, 'invoke', {
       endpoint: connector.baseUrl || undefined,
       credentialService: connector.credentialKey || connector.name,
+      apiKeyHeader: connector.apiKeyHeader,
+      authType: connector.authType,
     });
   }
 
@@ -110,6 +112,8 @@ export class ExternalRegistrySync {
         this.registry.register(mapped.id, 'invoke', {
           endpoint: mapped.baseUrl || undefined,
           credentialService: mapped.credentialKey,
+          apiKeyHeader: mapped.apiKeyHeader,
+          authType: mapped.authType,
         });
         loaded++;
       }

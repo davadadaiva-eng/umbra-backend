@@ -337,6 +337,9 @@ export class AgentRuntime {
         case 'skill':
           step.result = await this.executeSkillStep(task, plannedStep);
           break;
+        case 'mcp_call':
+          step.result = await this.executeMcpCallStep(plannedStep);
+          break;
         case 'skill_learn':
           step.result = this.recordSkillInvocation(
             String(plannedStep.params?.skill ?? 'learned'),
@@ -541,6 +544,24 @@ Relevant knowledge: ${contextBlock}` },
 
     const result = await this.llm.complete(messages, 'reasoning', { temperature: 0.3 });
     return result.content;
+  }
+
+  /**
+   * Invoke a connector tool from the MCP catalog: mcp_call {connector, tool?, input?}.
+   * `connector` is the catalog id (e.g. communication-slack); tool defaults to
+   * "invoke" (the generic connector binding).
+   */
+  private async executeMcpCallStep(plannedStep: PlannedStep): Promise<string> {
+    if (!this.mcpRouter) return '[MCP router not configured]';
+    const connector = String(plannedStep.params?.connector || plannedStep.params?.tool || '');
+    if (!connector) return 'mcp_call needs params.connector';
+    const tool = plannedStep.params?.tool && plannedStep.params.connector ? String(plannedStep.params.tool) : 'invoke';
+    const input = (plannedStep.params?.input as Record<string, unknown>) || {};
+
+    const result = await this.mcpRouter.call(connector, tool, input);
+    if (!result.ok) return `Connector ${connector}.${tool} failed [${result.transport}]: ${result.error || 'unknown error'}`;
+    const output = typeof result.output === 'string' ? result.output : JSON.stringify(result.output);
+    return `Connector ${connector}.${tool} [${result.transport}, ${result.latencyMs}ms]: ${output.substring(0, 4000)}`;
   }
 
   private async executeSkillStep(task: Task, plannedStep: PlannedStep): Promise<string> {

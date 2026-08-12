@@ -9,6 +9,16 @@ export interface PlannedStep {
   requiresKnowledge: string[];
 }
 
+/** Every action the agent runtime can execute — the planner may only emit these. */
+export const PLANNER_ACTIONS: readonly string[] = [
+  'navigate', 'click', 'type', 'scroll', 'extract', 'wait',
+  'file_read', 'file_write', 'search', 'think', 'web_search',
+  'video_tool', 'video_produce',
+  'open_app', 'open_chrome', 'app_click', 'app_type', 'app_key', 'app_hotkey', 'app_scroll', 'read_screen', 'chrome_evaluate',
+  'repo_status', 'repo_list', 'repo_read', 'repo_write', 'repo_run', 'repo_open',
+  'skill', 'skill_learn', 'delegate', 'mcp_call',
+];
+
 export interface TaskPlan {
   taskId: string;
   description: string;
@@ -64,7 +74,12 @@ Rules:
    - chrome_evaluate {expression} — run JavaScript inside the real Chrome page (only after open_chrome)
    These actions control the REAL desktop with real mouse/keyboard, not a browser sandbox. For pure web tasks with no logins needed, navigate/click/type/extract are still preferred.
 10. When a step fails, plan a recovery step (e.g. read_screen to observe, then app_key Escape, or open_app again).
-11. YOUR CODE REPOS (registered projects on this machine — the user's own projects): the agent can read, edit, run commands in and open any registered repo:
+11. TOOL CONNECTORS (MCP catalog — external services like Slack, Stripe, GitHub, Google Drive):
+    - mcp_call {connector, tool?, input} — invoke a registered connector tool. connector is the catalog id (e.g. communication-slack), tool defaults to "invoke", input is the argument object. Use when the user names a specific service ("post to slack", "send invoice", "search drive") or when a step needs live data from an external service.
+    - skill {intent?, tool?, input?} — run a skill from the 190+ skill stack (routing by intent).
+    - skill_learn {skill, result, note?} — record a successful/error skill invocation for the recorder.
+    - delegate {prompt, provider?, model?, maxTurns?} — hand a self-contained sub-task (deep research, a big coding task, document analysis) to Hermes Agent (Nous Research), a separate agent process, and wait for its final answer. Use for tasks that are better done by a dedicated agent: "deep-dive this paper", "write this full module", "audit this codebase". Keep the prompt self-contained.
+12. YOUR CODE REPOS (registered projects on this machine — the user's own projects): the agent can read, edit, run commands in and open any registered repo:
     - repo_status {repo?} — git status of one repo, or all registered repos if repo omitted (branch, last commit, dirty files). Run this FIRST when a task mentions one of the user's projects.
     - repo_list {repo, path?} — list files in the repo
     - repo_read {repo, path} — read a file from the repo
@@ -82,7 +97,7 @@ Respond with a JSON object:
   "steps": [
     {
       "description": "Step description",
-      "action": "navigate|click|type|scroll|extract|wait|file_read|file_write|search|think|web_search|video_tool|video_produce|open_app|open_chrome|app_click|app_type|app_key|app_hotkey|app_scroll|read_screen|chrome_evaluate|repo_status|repo_list|repo_read|repo_write|repo_run|repo_open",
+      "action": "navigate|click|type|scroll|extract|wait|file_read|file_write|search|think|web_search|video_tool|video_produce|open_app|open_chrome|app_click|app_type|app_key|app_hotkey|app_scroll|read_screen|chrome_evaluate|repo_status|repo_list|repo_read|repo_write|repo_run|repo_open|skill|skill_learn|delegate|mcp_call",
       "params": { ... },
       "requiresKnowledge": ["node-id"]
     }

@@ -8,6 +8,8 @@ import { CompiledSkill, McpRegistryEntry } from '../skill/SkillCompiler';
 
 export type McpTransport = 'http' | 'native' | 'prompt';
 
+export type McpAuthType = 'none' | 'bearer' | 'apiKey' | 'oauth';
+
 export interface McpToolBinding {
   key: string;
   skill: string;
@@ -17,6 +19,10 @@ export interface McpToolBinding {
   endpoint?: string;
   credentialService?: string;
   method?: string;
+  /** Header used to carry the secret (e.g. 'X-API-Key', 'xi-api-key'). */
+  apiKeyHeader?: string;
+  /** How the secret is attached: bearer / apiKey header / none. */
+  authType?: McpAuthType;
 }
 
 export interface RegisterToolOptions {
@@ -24,6 +30,8 @@ export interface RegisterToolOptions {
   endpoint?: string;
   credentialService?: string;
   transport?: McpTransport;
+  apiKeyHeader?: string;
+  authType?: McpAuthType;
 }
 
 export class McpRegistry {
@@ -37,6 +45,8 @@ export class McpRegistry {
       transport: options.transport ?? (options.endpoint ? 'http' : 'prompt'),
       endpoint: options.endpoint,
       credentialService: options.credentialService,
+      apiKeyHeader: options.apiKeyHeader,
+      authType: options.authType,
     };
     this.tools.set(binding.key, binding);
     return binding;

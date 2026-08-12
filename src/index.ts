@@ -372,7 +372,24 @@ export class UmbraOS {
     // ── MCP registry + router (vault-backed HTTP connectors) ──
     this.mcpRegistry = new McpRegistry();
     const httpConnector = new McpHttpConnector({ vault: this.credVault });
-    this.mcpRouter = new McpRouter(this.mcpRegistry, { connector: httpConnector });
+    this.mcpRouter = new McpRouter(this.mcpRegistry, {
+      connector: httpConnector,
+      // Native transport: hermes-agent is a local binary, not an HTTP endpoint.
+      nativeHandlers: new Map<string, (input: Record<string, unknown>) => unknown>([
+        ['hermes-agent.execute', async (input: Record<string, unknown>) => {
+          const prompt = String(input.prompt || '');
+          if (!prompt) throw new Error('hermes-agent.execute needs input.prompt');
+          if (!this.hermes.isInstalled()) throw new Error('Hermes not installed — run the Nous Research installer, then set config.hermes.bin');
+          const res = await this.hermes.runTask(prompt, {
+            provider: input.provider ? String(input.provider) : undefined,
+            model: input.model ? String(input.model) : undefined,
+            maxTurns: input.maxTurns ? Number(input.maxTurns) : undefined,
+          });
+          if (!res.ok) throw new Error(`Hermes task failed${res.error ? `: ${res.error}` : ''}`);
+          return res.output;
+        }],
+      ]),
+    });
     this.mcpExternal = new ExternalRegistrySync(this.mcpRegistry, { dedupe: true });
 
     // ── P2P: pairing + signaling + PWA control plane ──────────
@@ -496,6 +513,8 @@ export class UmbraOS {
       this.mcpRegistry.register(connector.id, 'invoke', {
         endpoint: connector.enabled && connector.baseUrl ? connector.baseUrl : undefined,
         credentialService: connector.credentialKey || connector.name,
+        apiKeyHeader: connector.apiKeyHeader,
+        authType: connector.authType,
       });
     }
 
@@ -676,6 +695,8 @@ export class UmbraOS {
       this.mcpRegistry.register(entry.id, 'invoke', {
         endpoint: entry.baseUrl,
         credentialService: entry.credentialKey || entry.name,
+        apiKeyHeader: entry.apiKeyHeader,
+        authType: entry.authType,
       });
     }
     return { connector: entry, registered: opts.enabled && Boolean(entry.baseUrl) };

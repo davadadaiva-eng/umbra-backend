@@ -8,13 +8,13 @@ import {
 } from './McpCatalog';
 
 describe('MCP Connector Catalog', () => {
-  it('ships a broad catalog (≥250 connectors)', () => {
-    expect(MCP_CATALOG.length).toBeGreaterThanOrEqual(250);
+  it('ships a mega catalog (≥1000 connectors)', () => {
+    expect(MCP_CATALOG.length).toBeGreaterThanOrEqual(1000);
   });
 
-  it('defines at least 150 verified connectors and 30 templates', () => {
-    expect(VERIFIED_CONNECTORS.length).toBeGreaterThanOrEqual(150);
-    expect(TEMPLATE_CONNECTORS.length).toBeGreaterThanOrEqual(30);
+  it('defines at least 300 verified connectors and 200 templates', () => {
+    expect(VERIFIED_CONNECTORS.length).toBeGreaterThanOrEqual(300);
+    expect(TEMPLATE_CONNECTORS.length).toBeGreaterThanOrEqual(200);
   });
 
   it('has unique ids across the catalog', () => {
@@ -55,7 +55,7 @@ describe('MCP Connector Catalog', () => {
     const grouped = catalogByCategory();
     const total = Object.values(grouped).reduce((n, list) => n + list.length, 0);
     expect(total).toBe(MCP_CATALOG.length);
-    expect(Object.keys(grouped).length).toBeGreaterThanOrEqual(10);
+    expect(Object.keys(grouped).length).toBeGreaterThanOrEqual(20);
   });
 
   it('assigns ids unique per category', () => {
