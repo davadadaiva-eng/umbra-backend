@@ -31,6 +31,7 @@ function makeConfig(endpoint: string): UmbraConfig {
     meeting: { enabled: false, stt: 'none', tts: 'none' },
     telco: { enabled: false, provider: 'telnyx', fromNumber: '' },
     docker: { enabled: false, socketPath: '', defaultCpus: 0, defaultMemoryMb: 0 },
+    hermes: { enabled: true, bin: '', taskTimeoutMs: 300_000 },
   };
 }
 

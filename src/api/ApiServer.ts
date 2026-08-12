@@ -25,6 +25,10 @@ export interface ApiServerDeps {
   getSwarmStatus(): Promise<unknown>;
   getAuditStats(): Promise<unknown>;
   getRepos(): Promise<unknown>;
+  getMcpCatalog(): Promise<unknown>;
+  connectMcp(id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }): Promise<unknown>;
+  syncExternalConnectors(opts?: { maxPerSource?: number }): Promise<unknown>;
+  delegateHermes(description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }): Promise<unknown>;
   generateJournalNow(): Promise<unknown>;
   shutdown(): void;
 }
@@ -177,6 +181,31 @@ export class ApiServer {
       [/^GET \/api\/swarm$/, async () => ({ swarm: await this.deps.getSwarmStatus() })],
       [/^GET \/api\/vault\/stats$/, async () => ({ vault: await this.deps.getAuditStats() })],
       [/^GET \/api\/repos$/, async () => ({ repos: await this.deps.getRepos() })],
+      [/^GET \/api\/mcp\/catalog$/, async () => ({ catalog: await this.deps.getMcpCatalog() })],
+      [/^POST \/api\/mcp\/connect$/, async (_url, body) => {
+        const id = String(body.id || '');
+        if (!id) throw new Error('id is required');
+        const opts = {
+          baseUrl: body.baseUrl !== undefined ? String(body.baseUrl) : undefined,
+          apiKey: body.apiKey !== undefined ? String(body.apiKey) : undefined,
+          enabled: body.enabled !== undefined ? Boolean(body.enabled) : undefined,
+        };
+        return { connector: await this.deps.connectMcp(id, opts) };
+      }],
+      [/^POST \/api\/mcp\/sync$/, async (_url, body) => {
+        const maxPerSource = body.maxPerSource !== undefined ? Number(body.maxPerSource) : 100;
+        return { sync: await this.deps.syncExternalConnectors({ maxPerSource }) };
+      }],
+      [/^POST \/api\/agent\/delegate$/, async (_url, body) => {
+        const description = String(body.description || '');
+        if (!description) throw new Error('description is required');
+        const opts = {
+          provider: body.provider !== undefined ? String(body.provider) : undefined,
+          model: body.model !== undefined ? String(body.model) : undefined,
+          timeoutMs: body.timeoutMs !== undefined ? Number(body.timeoutMs) : undefined,
+        };
+        return { output: await this.deps.delegateHermes(description, opts) };
+      }],
       [/^POST \/api\/journal\/generate$/, async () => ({ journal: await this.deps.generateJournalNow() })],
       [/^POST \/api\/shutdown$/, async () => {
         this.deps.shutdown();

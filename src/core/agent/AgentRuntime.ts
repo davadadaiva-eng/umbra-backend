@@ -22,6 +22,7 @@ import { SkillRecorder } from '../skill/SkillRecorder';
 import { McpRouter } from '../mcp/McpRouter';
 import { MeteringService } from '../metering/MeteringService';
 import { GraphifyContextEngine } from '../graphify/GraphifyContextEngine';
+import { HermesAgentBridge } from './HermesAgent';
 import { eventBus } from '../EventBus';
 import { getLogger } from '../Logger';
 export class AgentRuntime {
@@ -46,6 +47,7 @@ export class AgentRuntime {
   private mcpRouter?: McpRouter;
   private metering?: MeteringService;
   private graphify?: GraphifyContextEngine;
+  private hermes?: HermesAgentBridge;
   private activeTasks: Map<string, Task> = new Map();
   private maxSteps: number = 15;
 
@@ -79,6 +81,7 @@ export class AgentRuntime {
     mcpRouter?: McpRouter;
     metering?: MeteringService;
     graphify?: GraphifyContextEngine;
+    hermes?: HermesAgentBridge;
   }): void {
     if (subsystems.swarm) this.swarm = subsystems.swarm;
     if (subsystems.healer) this.healer = subsystems.healer;
@@ -97,6 +100,7 @@ export class AgentRuntime {
     if (subsystems.mcpRouter) this.mcpRouter = subsystems.mcpRouter;
     if (subsystems.metering) this.metering = subsystems.metering;
     if (subsystems.graphify) this.graphify = subsystems.graphify;
+    if (subsystems.hermes) this.hermes = subsystems.hermes;
   }
 
   async submitTask(description: string, priority: number = 0): Promise<Task> {
@@ -366,6 +370,10 @@ export class AgentRuntime {
             title: produced.script.title,
           });
           break;
+        case 'delegate':
+          if (!this.hermes) throw new Error('Hermes bridge not configured');
+          step.result = await this.delegateToHermes(task, plannedStep);
+          break;
         default:
           step.result = `Unknown action: ${plannedStep.action}`;
       }
@@ -464,6 +472,37 @@ export class AgentRuntime {
       eventBus.emit('task:failed', task.id, task.error);
     }
     return true;
+  }
+
+  /**
+   * Delegate a step (or the whole task) to Hermes Agent by Nous Research.
+   * Uses headless one-shot mode (`hermes -z <prompt>`); returns the agent's
+   * final response text.
+   */
+  async delegateToHermes(task: Task, plannedStep?: PlannedStep): Promise<string> {
+    if (!this.hermes) throw new Error('Hermes bridge not configured');
+    if (!this.hermes.isInstalled()) throw new Error('Hermes not installed — run the Nous Research installer, then set config.hermes.bin');
+
+    const prompt = String(plannedStep?.params?.prompt || task.description);
+    const provider = plannedStep?.params?.provider ? String(plannedStep.params.provider) : undefined;
+    const model = plannedStep?.params?.model ? String(plannedStep.params.model) : undefined;
+    const maxTurns = plannedStep?.params?.maxTurns ? Number(plannedStep.params.maxTurns) : undefined;
+
+    const res = await this.hermes.runTask(prompt, { provider, model, maxTurns });
+    if (res.ok) {
+      this.vault?.log('task_delegated', task.id, { engine: 'hermes', durationMs: res.durationMs }, res.output);
+      return `${res.output}${res.durationMs > 0 ? `\n[hermes · ${res.durationMs}ms]` : ''}`;
+    }
+    throw new Error(`Hermes task failed${res.error ? `: ${res.error}` : ''}`);
+  }
+
+  /** One-shot task execution handed entirely to Hermes. */
+  async delegateTask(description: string, options: { provider?: string; model?: string; timeoutMs?: number } = {}): Promise<string> {
+    if (!this.hermes) throw new Error('Hermes bridge not configured');
+    if (!this.hermes.isInstalled()) throw new Error('Hermes not installed — run the Nous Research installer, then set config.hermes.bin');
+    const res = await this.hermes.runTask(description, options);
+    if (!res.ok) throw new Error(`Hermes task failed${res.error ? `: ${res.error}` : ''}`);
+    return res.output;
   }
 
   private async webSearchStep(plannedStep: PlannedStep): Promise<string> {

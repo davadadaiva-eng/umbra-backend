@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { UmbraConfig, ModelProvider } from '../types';
+import { UmbraConfig, ModelProvider, McpConnectorConfig } from '../types';
 import { getLogger } from '../core/Logger';
+import { MCP_CATALOG, McpCatalogEntry } from '../core/mcp/McpCatalog';
 
 const DEFAULT_CONFIG: UmbraConfig = {
   provider: 'ollama',
@@ -99,6 +100,11 @@ const DEFAULT_CONFIG: UmbraConfig = {
     defaultCpus: 2,
     defaultMemoryMb: 2048,
   },
+  hermes: {
+    enabled: true,
+    bin: '',
+    taskTimeoutMs: 300_000,
+  },
 };
 
 export class ConfigManager {
@@ -180,6 +186,49 @@ export class ConfigManager {
   async updateHotkeys(hotkeys: Partial<UmbraConfig['hotkeys']>): Promise<void> {
     Object.assign(this.config.hotkeys, hotkeys);
     await this.saveConfig();
+  }
+
+  /**
+   * Reactivate every catalog connector into config (enabled: false) so the UI
+   * can list all of them. Pre-existing entries keep their enabled/baseUrl.
+   */
+  async syncConnectorCatalog(): Promise<void> {
+    let changed = false;
+    for (const entry of MCP_CATALOG) {
+      const existing = this.config.mcp.connectors.find(c => c.id === entry.id);
+      if (!existing) {
+        this.config.mcp.connectors.push(this.fromCatalog(entry));
+        changed = true;
+      }
+    }
+    if (changed) await this.saveConfig();
+  }
+
+  /** Persist (or update) a connector in config, keeping its catalog defaults. */
+  async upsertMcpConnector(id: string, patch: Partial<McpConnectorConfig>): Promise<McpConnectorConfig> {
+    const entry = MCP_CATALOG.find(c => c.id === id);
+    const base = entry ? this.fromCatalog(entry) : undefined;
+    let connector = this.config.mcp.connectors.find(c => c.id === id);
+    if (!connector) {
+      connector = { ...(base ?? { id, name: id, category: 'Custom', baseUrl: '', authType: 'none', enabled: false }) };
+      this.config.mcp.connectors.push(connector);
+    }
+    Object.assign(connector, patch);
+    await this.saveConfig();
+    return connector;
+  }
+
+  private fromCatalog(entry: McpCatalogEntry): McpConnectorConfig {
+    return {
+      id: entry.id,
+      name: entry.name,
+      category: entry.category,
+      baseUrl: entry.baseUrl,
+      authType: entry.authType,
+      apiKeyHeader: entry.apiKeyHeader,
+      credentialKey: entry.credentialKey,
+      enabled: false,
+    };
   }
 
   get raw(): UmbraConfig {

@@ -1,7 +1,10 @@
 /**
  * Master Skill Stack — the 100 skills the system runs on top of:
  * 20 domains × 5 skills, each with a purpose and success criteria.
+ * Extended with the Master Skill Stack Matrix (20 specialized domains).
  */
+
+import { MASTER_MATRIX_DOMAINS } from './MasterMatrix';
 
 export interface StackSkill {
   id: string;
@@ -19,7 +22,7 @@ export interface SkillDomain {
   skills: StackSkill[];
 }
 
-type SkillRow = [name: string, purpose: string, success: string, triggers: string[]];
+export type SkillRow = [name: string, purpose: string, success: string, triggers: string[]];
 
 const DOMAINS: { id: string; label: string; rows: SkillRow[] }[] = [
   {
@@ -236,6 +239,22 @@ export const SKILL_DOMAINS: SkillDomain[] = DOMAINS.map(d => ({
     triggers,
   })),
 }));
+
+// ── Master Skill Stack Matrix (PDF) — 20 extra specialized domains ──
+for (const d2 of MASTER_MATRIX_DOMAINS) {
+  SKILL_DOMAINS.push({
+    id: d2.id,
+    label: d2.label,
+    skills: d2.rows.map(([name, purpose, success, triggers]) => ({
+      id: `${d2.id}.${name}`,
+      domain: d2.id,
+      name,
+      purpose,
+      success,
+      triggers,
+    })),
+  });
+}
 
 export const ALL_SKILLS: StackSkill[] = SKILL_DOMAINS.flatMap(d => d.skills);
 

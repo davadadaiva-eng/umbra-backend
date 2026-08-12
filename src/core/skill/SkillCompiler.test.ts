@@ -54,15 +54,20 @@ describe('SkillRecorder', () => {
 });
 
 describe('Master Skill Stack', () => {
-  it('defines 20 domains × 5 skills = 100 skills', () => {
-    expect(SKILL_DOMAINS).toHaveLength(20);
-    expect(skillCount()).toBe(100);
-    for (const domain of SKILL_DOMAINS) expect(domain.skills).toHaveLength(5);
+  it('defines 40 domains with ≥190 skills total', () => {
+    expect(SKILL_DOMAINS.length).toBe(40);
+    expect(skillCount()).toBeGreaterThanOrEqual(190);
+    for (const domain of SKILL_DOMAINS) expect(domain.skills.length).toBeGreaterThanOrEqual(4);
   });
 
   it('assigns unique skill ids', () => {
     const ids = new Set(ALL_SKILLS.map(s => s.id));
-    expect(ids.size).toBe(100);
+    expect(ids.size).toBe(ALL_SKILLS.length);
+  });
+
+  it('includes the master skill stack matrix domains', () => {
+    const matrixIds = SKILL_DOMAINS.filter(d => ['tax', 'frontend', 'seo', 'video', 'ip'].includes(d.id)).map(d => d.id);
+    expect(matrixIds).toEqual(expect.arrayContaining(['tax', 'frontend', 'seo', 'video', 'ip']));
   });
 });
 

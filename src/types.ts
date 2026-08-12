@@ -123,6 +123,13 @@ export interface UmbraConfig {
     defaultCpus: number;
     defaultMemoryMb: number;
   };
+  hermes: {
+    enabled: boolean;
+    /** Path override for the `hermes` CLI (auto-detected when empty). */
+    bin: string;
+    /** Max seconds a delegated task may run before it is killed. */
+    taskTimeoutMs: number;
+  };
 }
 
 export type TaskStatus = 'pending' | 'planning' | 'executing' | 'healing' | 'completed' | 'failed' | 'cancelled';

@@ -1,0 +1,123 @@
+/**
+ * External Registry Sync — discovers MCP connectors from public registries,
+ * validates them, and registers connectable entries into the local MCP
+ * registry. Secrets never leave the machine: auth tokens are resolved
+ * lazily from the CredentialVault at call time.
+ */
+
+import { McpRegistry } from './McpRegistry';
+import { McpConnectorConfig } from '../../types';
+import { getLogger } from '../Logger';
+
+export interface RegistrySource {
+  /** Human label for logs. */
+  name: string;
+  url: string;
+  /** Response accessor: how to pull the list from a parsed JSON body. */
+  extract: (json: any) => any[];
+  /** Field accessors mapping a registry entry → catalog shape. */
+  map: (entry: any, index: number) => Partial<McpConnectorConfig> & { description?: string };
+  /** HTTP headers for the request. */
+  headers?: Record<string, string>;
+}
+
+export interface SyncOptions {
+  sources?: RegistrySource[];
+  /** Per-source fetch timeout. */
+  timeoutMs?: number;
+  /** Max connectors to accept per source (0 = unlimited). */
+  maxPerSource?: number;
+  /** Skip already-registered ids. */
+  dedupe?: boolean;
+  /** Optional listener for progress. */
+  onProgress?: (source: string, count: number, total: number) => void;
+}
+
+const SMITHERY_SOURCE: RegistrySource = {
+  name: 'smithery',
+  url: 'https://api.smithery.ai/servers',
+  extract: json => json?.servers ?? [],
+  map: (e: any) => ({
+    id: `smithery-${e.qualifiedName || e.id || ''}`.replace(/[^a-zA-Z0-9-_]/g, '-'),
+    name: e.displayName || e.qualifiedName || 'Unknown',
+    category: 'External Registry',
+    baseUrl: e.remote ? e.homepage || '' : '',
+    authType: (e.verified ? 'apiKey' : 'none') as McpConnectorConfig['authType'],
+    apiKeyHeader: 'Authorization',
+    credentialKey: 'smithery',
+    description: typeof e.description === 'string' ? e.description.slice(0, 160) : '',
+  }),
+};
+
+export class ExternalRegistrySync {
+  private registry: McpRegistry;
+  private options: SyncOptions;
+
+  constructor(registry: McpRegistry, options: SyncOptions = {}) {
+    this.registry = registry;
+    this.options = options;
+  }
+
+  /** Register a connector directly (local API path stays separate). */
+  registerLocal(connector: McpConnectorConfig): void {
+    this.registry.register(connector.id, 'invoke', {
+      endpoint: connector.baseUrl || undefined,
+      credentialService: connector.credentialKey || connector.name,
+    });
+  }
+
+  /** Pull connectors from all configured sources and register them. */
+  async sync(callOptions: SyncOptions = {}): Promise<{ registered: number; sources: string[]; errors: string[] }> {
+    const opts = { ...this.options, ...callOptions };
+    const sources = opts.sources ?? [SMITHERY_SOURCE];
+    const errors: string[] = [];
+    let registered = 0;
+
+    for (const source of sources) {
+      try {
+        const count = await this.syncSource(source, opts);
+        registered += count;
+      } catch (err) {
+        errors.push(`${source.name}: ${err instanceof Error ? err.message : String(err)}`);
+        getLogger().warn({ source: source.name, err: errors[errors.length - 1] }, 'Registry sync failed for source');
+      }
+    }
+    return { registered, sources: sources.map(s => s.name), errors };
+  }
+
+  private async syncSource(source: RegistrySource, opts: SyncOptions): Promise<number> {
+    const timeoutMs = opts.timeoutMs ?? 20_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let loaded = 0;
+    try {
+      const res = await fetch(source.url, {
+        headers: { 'accept': 'application/json', 'user-agent': 'umbra-os/registry-sync', ...source.headers },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      let payload: any;
+      try { payload = await res.json(); } catch { throw new Error(`Non-JSON response from ${source.url}`); }
+      const raw = source.extract(payload);
+      if (!Array.isArray(raw)) throw new Error('Extractor did not return an array');
+
+      const max = opts.maxPerSource && opts.maxPerSource > 0 ? opts.maxPerSource : raw.length;
+      for (let i = 0; i < Math.min(max, raw.length); i++) {
+        const mapped = source.map(raw[i], i);
+        if (!mapped.id) continue;
+        if (opts.dedupe && this.registry.resolve(mapped.id, 'invoke')) continue;
+        this.registry.register(mapped.id, 'invoke', {
+          endpoint: mapped.baseUrl || undefined,
+          credentialService: mapped.credentialKey,
+        });
+        loaded++;
+      }
+      opts.onProgress?.(source.name, loaded, raw.length);
+      getLogger().info({ source: source.name, loaded }, 'Registry sync complete for source');
+      return loaded;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}

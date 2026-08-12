@@ -9,6 +9,7 @@ import { initializeLogger, getLogger } from './core/Logger';
 import { LLMConnector } from './core/agent/LLMConnector';
 import { TaskPlanner } from './core/agent/TaskPlanner';
 import { AgentRuntime } from './core/agent/AgentRuntime';
+import { HermesAgentBridge } from './core/agent/HermesAgent';
 import { WorkspaceFiles } from './core/agent/WorkspaceFiles';
 import { ReposManager } from './core/agent/ReposManager';
 import { ConsentGate } from './core/agent/ConsentGate';
@@ -44,6 +45,7 @@ import { SkillRouter } from './core/skill/SkillRouter';
 import { McpRegistry } from './core/mcp/McpRegistry';
 import { McpRouter } from './core/mcp/McpRouter';
 import { McpHttpConnector } from './core/mcp/McpHttpConnector';
+import { ExternalRegistrySync } from './core/mcp/ExternalRegistrySync';
 import { CredentialVault } from './core/vault/CredentialVault';
 import { LiveShadowEngine } from './core/shadow/LiveShadowEngine';
 import { MeetingAgent } from './core/meeting/MeetingAgent';
@@ -52,6 +54,7 @@ import { DockerDaemon } from './core/docker/DockerDaemon';
 import { MeteringService } from './core/metering/MeteringService';
 import { MeteredLLMConnector } from './core/metering/MeteredLLMConnector';
 import { ALL_SKILLS } from './core/skill/SkillStack';
+import { listSkillRepos } from './core/skill/SkillRepos';
 
 export class UmbraOS {
   private configManager!: ConfigManager;
@@ -95,6 +98,8 @@ export class UmbraOS {
   private skillRouter!: SkillRouter;
   private mcpRegistry!: McpRegistry;
   private mcpRouter!: McpRouter;
+  private mcpExternal!: ExternalRegistrySync;
+  private hermes!: HermesAgentBridge;
   private credVault!: CredentialVault;
   private shadow!: LiveShadowEngine;
   private meetings!: MeetingAgent;
@@ -262,6 +267,10 @@ export class UmbraOS {
       this.taskPlanner,
       new WorkspaceFiles(path.join(config.paths.dataDir, 'workspace')),
     );
+    this.hermes = new HermesAgentBridge({
+      bin: config.hermes.bin || undefined,
+      timeoutMs: config.hermes.taskTimeoutMs,
+    });
 
     this.agent.registerSubsystems({
       swarm: this.swarm,
@@ -276,6 +285,7 @@ export class UmbraOS {
       openmontage: this.openmontage,
       videoProducer: this.videoProducer,
       repos: this.repos,
+      hermes: this.hermes,
     });
 
     // ── Deep Understanding (LLM-powered research & expansion) ─
@@ -338,6 +348,10 @@ export class UmbraOS {
       getSwarmStatus: () => this.getSwarmStatus(),
       getAuditStats: () => this.getAuditStats(),
       getRepos: () => this.getRepos(),
+      getMcpCatalog: () => this.getMcpCatalog(),
+      connectMcp: (id, opts) => this.connectMcp(id, opts),
+      syncExternalConnectors: opts => this.syncExternalConnectors(opts),
+      delegateHermes: (description, opts) => this.agent.delegateTask(description, opts),
       generateJournalNow: () => this.generateJournalNow(),
       shutdown: () => {
         if (process.listenerCount('SIGINT') > 0) process.emit('SIGINT');
@@ -359,6 +373,7 @@ export class UmbraOS {
     this.mcpRegistry = new McpRegistry();
     const httpConnector = new McpHttpConnector({ vault: this.credVault });
     this.mcpRouter = new McpRouter(this.mcpRegistry, { connector: httpConnector });
+    this.mcpExternal = new ExternalRegistrySync(this.mcpRegistry, { dedupe: true });
 
     // ── P2P: pairing + signaling + PWA control plane ──────────
     if (config.p2p.enabled) {
@@ -472,15 +487,24 @@ export class UmbraOS {
       this.shadow.start();
     }
 
-    // ── MCP connectors from config (vault-backed credentials) ─
-    for (const connector of config.mcp.connectors) {
-      if (!connector.enabled) continue;
+    // ── MCP connectors from config + full catalog (vault-backed credentials)
+    //    Deploy the entire catalog into config so every connector is visiable
+    //    and registered, and mark those the user has enabled as connected.
+    await this.configManager.syncConnectorCatalog();
+    const deployedConnectors = this.configManager.raw.mcp.connectors;
+    for (const connector of deployedConnectors) {
       this.mcpRegistry.register(connector.id, 'invoke', {
-        endpoint: connector.baseUrl,
+        endpoint: connector.enabled && connector.baseUrl ? connector.baseUrl : undefined,
         credentialService: connector.credentialKey || connector.name,
       });
     }
-    getLogger().info({ tools: this.mcpRegistry.list().length }, 'MCP registry ready');
+
+    // ── Hermes Agent (Nous Research) — one-shot delegated tasks ──
+    this.mcpRegistry.register('hermes-agent', 'execute', {
+      transport: 'native',
+      credentialService: undefined,
+    });
+    getLogger().info({ tools: this.mcpRegistry.list().length, connectors: deployedConnectors.length, hermes: config.hermes.enabled }, 'MCP registry ready');
 
     // ── Agent browser: launch once at boot, reused by all tasks ──
     // (ghost/desktop2 modes own Chrome themselves — RealDesktop2 uses the
@@ -610,6 +634,58 @@ export class UmbraOS {
     return this.repos.statusAll();
   }
 
+  async getMcpCatalog(): Promise<any> {
+    await this.configManager.syncConnectorCatalog();
+    const config = this.configManager.raw.mcp.connectors;
+    const active = this.mcpRegistry.list().filter(t => t.transport === 'http').length;
+    const entries = config.map(c => {
+      const binding = this.mcpRegistry.resolve(c.id, 'invoke');
+      return {
+        ...c,
+        connected: binding?.transport === 'http',
+        registered: binding !== undefined,
+        apiKeyConfigured: this.credVault.isUnlocked && typeof this.credVault.find(c.credentialKey || c.name) !== 'undefined',
+      };
+    });
+    return { count: entries.length, active, entries };
+  }
+
+  async connectMcp(id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }): Promise<any> {
+    const entry = await this.configManager.upsertMcpConnector(id, {
+      baseUrl: opts.baseUrl,
+      enabled: opts.enabled,
+    });
+    if (opts.apiKey) {
+      if (this.credVault.isUnlocked) {
+        this.credVault.set({
+          service: entry.credentialKey || entry.name,
+          username: 'api-key',
+          secret: opts.apiKey,
+        });
+      } else {
+        getLogger().warn({ id }, 'Vault locked — API key not stored');
+      }
+    } else if (opts.baseUrl && opts.enabled) {
+      const cred = this.credVault.find(entry.credentialKey || entry.name);
+      if (!cred) {
+        getLogger().warn({ id }, 'Connector enabled without stored secret — authType expects one');
+      }
+    }
+    // Re-register in the live registry so the router can dispatch immediately.
+    if (opts.enabled && entry.baseUrl) {
+      this.mcpRegistry.register(entry.id, 'invoke', {
+        endpoint: entry.baseUrl,
+        credentialService: entry.credentialKey || entry.name,
+      });
+    }
+    return { connector: entry, registered: opts.enabled && Boolean(entry.baseUrl) };
+  }
+
+  async syncExternalConnectors(opts?: { maxPerSource?: number }): Promise<any> {
+    const result = await this.mcpExternal.sync({ maxPerSource: opts?.maxPerSource ?? 100 });
+    return result;
+  }
+
   async getMacros(): Promise<any> {
     return this.memory.getAllMacros();
   }
@@ -725,6 +801,7 @@ export class UmbraOS {
       graphify: this.graphify,
       skillRecorder: this.skillRecorder,
       skillRouter: this.skillRouter,
+      skillRepos: listSkillRepos(),
       mcpRegistry: this.mcpRegistry,
       mcpRouter: this.mcpRouter,
       credVault: this.credVault,

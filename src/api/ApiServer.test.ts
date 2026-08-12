@@ -22,6 +22,10 @@ function makeDeps() {
     getSwarmStatus: async () => ({}),
     getAuditStats: async () => ({}),
     getRepos: async () => [{ name: 'demo', path: 'C:\\demo', exists: true, isGit: true, branch: 'main', lastCommit: 'a1b2c3 init', dirty: 0 }],
+    getMcpCatalog: async () => ({ count: 2, active: 0, entries: [] }),
+    connectMcp: async (id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }) => ({ id, ...opts }),
+    syncExternalConnectors: async () => ({ registered: 3, sources: ['smithery'], errors: [] }),
+    delegateHermes: async (description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }) => ({ description, ...opts }),
     generateJournalNow: async () => ({ ok: true }),
   };
 }
@@ -106,6 +110,44 @@ describe('ApiServer', () => {
     expect(res.status).toBe(200);
     expect(res.json.repos).toHaveLength(1);
     expect(res.json.repos[0].branch).toBe('main');
+  });
+
+  test('mcp catalog', async () => {
+    const res = await api('/api/mcp/catalog');
+    expect(res.status).toBe(200);
+    expect(res.json.catalog.count).toBe(2);
+    expect(res.json.catalog.active).toBe(0);
+  });
+
+  test('mcp connect requires id', async () => {
+    const res = await api('/api/mcp/connect', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('mcp connect applies options', async () => {
+    const res = await api('/api/mcp/connect', 'POST', { id: 'stripe', baseUrl: 'https://x', enabled: true });
+    expect(res.status).toBe(200);
+    expect(res.json.connector.id).toBe('stripe');
+    expect(res.json.connector.enabled).toBe(true);
+  });
+
+  test('mcp sync invokes external registry sync', async () => {
+    const res = await api('/api/mcp/sync', 'POST', { maxPerSource: 5 });
+    expect(res.status).toBe(200);
+    expect(res.json.sync.registered).toBe(3);
+    expect(res.json.sync.sources).toContain('smithery');
+  });
+
+  test('agent delegate requires description', async () => {
+    const res = await api('/api/agent/delegate', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('agent delegate hands off to hermes', async () => {
+    const res = await api('/api/agent/delegate', 'POST', { description: 'Summarize the repo', model: 'openrouter:deepseek/deepseek-r1' });
+    expect(res.status).toBe(200);
+    expect(res.json.output.description).toBe('Summarize the repo');
+    expect(res.json.output.model).toBe('openrouter:deepseek/deepseek-r1');
   });
 
   test('unknown route returns 404', async () => {

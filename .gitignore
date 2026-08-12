@@ -12,3 +12,4 @@ downloaded_files/
 __pycache__/
 mesh/target/
 mesh/.cargo/
+.freebuff/
