@@ -73,6 +73,10 @@ export interface MeetingCompanionOptions {
   onReminder?: (text: string) => Promise<string>;
   /** Speak a reply out loud (e.g. Windows SAPI TTS) during the meeting. */
   onSpeak?: (text: string, opts?: { voice?: string; language?: string }) => Promise<string>;
+  /** Meeting UI control (mute/unmute mic, raise/lower hand) via DOM automation. */
+  onMeetingControl?: (control: 'mute' | 'unmute' | 'raise_hand' | 'lower_hand') => Promise<string>;
+  /** Send a message in the meeting chat via DOM automation. */
+  onChatMessage?: (message: string) => Promise<string>;
   /** Seconds of audio captured per chunk. */
   chunkSec?: number;
   /** Detect + auto-execute orders from the transcript (default true). */
@@ -234,6 +238,38 @@ export class MeetingCompanion {
     throw new Error('No TTS/speaker configured (set meeting.tts to local or vibevoice)');
   }
 
+  /** Mute/unmute the local mic (delegates to onMeetingControl, else onExecute). */
+  async muteMic(muted: boolean): Promise<string> {
+    if (!this.session) throw new Error('Join a meeting first');
+    const control = muted ? 'mute' : 'unmute';
+    if (this.options.onMeetingControl) return this.options.onMeetingControl(control);
+    if (this.options.onExecute) return this.options.onExecute(control === 'mute' ? 'meeting_mute' : 'meeting_unmute', {});
+    throw new Error('No meeting control handler configured');
+  }
+
+  /** Raise/lower the virtual hand (delegates to onMeetingControl, else onExecute). */
+  async raiseHand(raised: boolean): Promise<string> {
+    if (!this.session) throw new Error('Join a meeting first');
+    const control = raised ? 'raise_hand' : 'lower_hand';
+    if (this.options.onMeetingControl) return this.options.onMeetingControl(control);
+    if (this.options.onExecute) return this.options.onExecute(raised ? 'meeting_raise_hand' : 'meeting_lower_hand', {});
+    throw new Error('No meeting control handler configured');
+  }
+
+  /** Send a message in the meeting chat (delegates to onChatMessage, else onExecute). */
+  async sendChat(message: string): Promise<string> {
+    if (!this.session) throw new Error('Join a meeting first');
+    if (this.options.onChatMessage) return this.options.onChatMessage(message);
+    if (this.options.onExecute) return this.options.onExecute('meeting_chat', { message });
+    throw new Error('No chat handler configured');
+  }
+
+  /** Unique speaker labels seen in the transcript (diarization-friendly). */
+  getAttendees(): string[] {
+    if (!this.session) return [];
+    return [...new Set(this.session.transcript.map(s => s.speaker).filter(Boolean))];
+  }
+
   /**
    * Detect and execute the orders in one transcript segment. Public so an API
    * or the audio loop can run it explicitly; feedAudio/startListening already
@@ -294,6 +330,16 @@ export class MeetingCompanion {
         return this.recordReminder(order.text);
       case 'say':
         return this.speak(order.text.replace(/^say\s+/i, ''));
+      case 'mute':
+        return this.muteMic(true);
+      case 'unmute':
+        return this.muteMic(false);
+      case 'raise_hand':
+        return this.raiseHand(true);
+      case 'lower_hand':
+        return this.raiseHand(false);
+      case 'chat':
+        return this.sendChat(order.text.replace(/^[^:]*?(?:chat|message)\s*/i, '').trim() || order.text);
       case 'execute':
       default:
         if (this.options.onExecute) {

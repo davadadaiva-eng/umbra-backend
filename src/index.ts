@@ -38,7 +38,15 @@ import { ImageGenerator } from './core/image/ImageGenerator';
 import { SpeechToText } from './core/voice/SpeechToText';
 import { ScreenAwareness } from './core/awareness/ScreenAwareness';
 import { MeetingCompanion } from './core/meeting/MeetingCompanion';
-import { detectMeetingProvider, meetingShareScript, meetingStopShareScript, ShareTarget } from './core/meeting/MeetingScreenShare';
+import {
+  detectMeetingProvider,
+  meetingShareScript,
+  meetingStopShareScript,
+  meetingMuteScript,
+  meetingRaiseHandScript,
+  meetingChatScript,
+  ShareTarget,
+} from './core/meeting/MeetingScreenShare';
 import { WindowsTts } from './core/audio/WindowsTts';
 import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
 import { VoiceboxClient } from './core/voice/VoiceboxClient';
@@ -50,6 +58,7 @@ import { GlobalHotkey } from './overlay/GlobalHotkey';
 import { ApiServer } from './api/ApiServer';
 import { PairingManager } from './p2p/PairingManager';
 import { P2PConnectionManager, P2PConnectionManagerOptions } from './p2p/P2PConnectionManager';
+import { MeshBridge } from './p2p/MeshBridge';
 import { DeviceRegistry } from './p2p/DeviceRegistry';
 import { DeviceHub } from './p2p/DeviceHub';
 import { DeviceClient } from './p2p/DeviceClient';
@@ -116,6 +125,7 @@ export class UmbraOS {
   private api!: ApiServer;
   private pairing?: PairingManager;
   private p2p?: P2PConnectionManager;
+  private mesh?: MeshBridge;
   private pwa?: PwaServer;
   private deviceRegistry?: DeviceRegistry;
   private deviceHub?: DeviceHub;
@@ -462,10 +472,12 @@ export class UmbraOS {
       getSwarmStatus: () => this.getSwarmStatus(),
       getAuditStats: () => this.getAuditStats(),
       getRepos: () => this.getRepos(),
-      getMcpCatalog: () => this.getMcpCatalog(),
+      getMcpCatalog: opts => this.getMcpCatalog(opts),
       connectMcp: (id, opts) => this.connectMcp(id, opts),
+      disconnectMcp: id => this.disconnectMcp(id),
       syncExternalConnectors: opts => this.syncExternalConnectors(opts),
       getModelStatus: () => this.getModelStatus(),
+      getPlanUsage: () => this.getPlanUsage(),
       testLlm: () => this.testLlm(),
       configureProvider: patch => this.configureProvider(patch),
       activatePlan: tier => this.activatePlan(tier),
@@ -474,6 +486,7 @@ export class UmbraOS {
       generateImage: (prompt, opts) => this.generateImage(prompt, opts),
       getVoiceStatus: () => this.getVoiceStatus(),
       transcribeAudio: (audio, opts) => this.transcribeAudio(audio, opts),
+      voiceCommand: (audio, opts) => this.voiceCommand(audio, opts),
       speakText: (text, opts) => this.speakOut(text, opts),
       listTtsVoices: () => this.listTtsVoices(),
       recallMemory: q => this.recallMemory(q),
@@ -492,6 +505,9 @@ export class UmbraOS {
       meetingStopShare: () => this.meetingStopShare(),
       meetingOrders: () => this.meetingOrders(),
       meetingSpeak: (text, opts) => this.meetingSpeak(text, opts),
+      meetingMute: muted => this.meetingMute(muted),
+      meetingRaiseHand: raised => this.meetingRaiseHand(raised),
+      meetingChat: message => this.meetingChat(message),
       listAudioDevices: () => this.listAudioDevices(),
       setAudioDefault: opts => this.setAudioDefault(opts),
       listDevices: () => this.getDevices(),
@@ -501,6 +517,10 @@ export class UmbraOS {
       sendToDevice: (deviceId, msg) => this.sendToDevice(deviceId, msg),
       delegateHermes: (description, opts) => this.agent.delegateTask(description, opts),
       generateJournalNow: () => this.generateJournalNow(),
+      getMeshStatus: () => this.meshStatus(),
+      meshPair: ttl => this.meshPair(ttl),
+      meshPairDemo: () => this.meshPairDemo(),
+      meshRevoke: deviceId => this.meshRevoke(deviceId),
       mcpHandle: message => this.mcpServer.handle(message),
       shutdown: () => {
         if (process.listenerCount('SIGINT') > 0) process.emit('SIGINT');
@@ -541,6 +561,20 @@ export class UmbraOS {
 
     // ── P2P: pairing + signaling + PWA control plane — desktop only ──
     if (config.p2p.enabled && !this.headless) {
+      // Rust mesh daemon (optional transport): zero-knowledge identity +
+      // QR pairing + paired-device store. Graceful when not built.
+      this.mesh = new MeshBridge({
+        enabled: config.p2p.meshEnabled !== false,
+        dataDir: path.join(config.paths.dataDir, 'mesh'),
+        name: 'umbra-desktop',
+      });
+      const meshStarted = await this.mesh.start();
+      if (meshStarted.ok) {
+        getLogger().info('Umbra mesh daemon running (P2P Rust transport)');
+      } else {
+        getLogger().debug({ reason: meshStarted.reason }, 'Umbra mesh daemon not started');
+      }
+
       this.pairing = new PairingManager({ dataDir: config.paths.dataDir });
       const pairing = this.pairing;
       const p2pOptions: P2PConnectionManagerOptions = {
@@ -693,6 +727,11 @@ export class UmbraOS {
         onExecute: (action, params) => this.executeGhost(action, params),
         onShareScreen: target => this.shareScreenInMeeting(target),
         onStopShare: () => this.stopScreenShareInMeeting(),
+        onMeetingControl: control =>
+          control === 'mute' || control === 'unmute'
+            ? this.controlMeetingMic(control === 'mute')
+            : this.controlMeetingHand(control === 'raise_hand'),
+        onChatMessage: message => this.chatInMeeting(message),
         onSearch: query => this.searchForMeeting(query),
         onNote: text => this.noteForMeeting(text),
         onReminder: text => this.reminderForMeeting(text),
@@ -940,11 +979,11 @@ export class UmbraOS {
     return this.repos.statusAll();
   }
 
-  async getMcpCatalog(): Promise<any> {
+  async getMcpCatalog(opts?: { q?: string; category?: string; enabled?: boolean; limit?: number; offset?: number }): Promise<any> {
     await this.configManager.syncConnectorCatalog();
     const config = this.configManager.raw.mcp.connectors;
     const active = this.mcpRegistry.list().filter(t => t.transport === 'http').length;
-    const entries = config.map(c => {
+    let entries = config.map(c => {
       const binding = this.mcpRegistry.resolve(c.id, 'invoke');
       return {
         ...c,
@@ -953,7 +992,31 @@ export class UmbraOS {
         apiKeyConfigured: this.credVault.isUnlocked && typeof this.credVault.find(c.credentialKey || c.name) !== 'undefined',
       };
     });
-    return { count: entries.length, active, entries };
+
+    const q = (opts?.q || '').trim().toLowerCase();
+    const category = (opts?.category || '').trim();
+    if (q) {
+      entries = entries.filter(c =>
+        c.name.toLowerCase().includes(q) ||
+        c.id.toLowerCase().includes(q) ||
+        String((c as any).description || '').toLowerCase().includes(q),
+      );
+    }
+    if (category) entries = entries.filter(c => c.category === category);
+    if (opts?.enabled !== undefined) entries = entries.filter(c => c.enabled === opts.enabled);
+
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : entries.length;
+    const page = entries.slice(offset, offset + limit);
+    return {
+      count: entries.length,
+      total: config.length,
+      active,
+      offset,
+      limit,
+      categories: [...new Set(config.map(c => c.category))].sort(),
+      entries: page,
+    };
   }
 
   async connectMcp(id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }): Promise<any> {
@@ -994,7 +1057,38 @@ export class UmbraOS {
     return result;
   }
 
+  /** Disable a connector: persist enabled:false and drop its live binding. */
+  async disconnectMcp(id: string): Promise<any> {
+    const entry = await this.configManager.upsertMcpConnector(id, { enabled: false });
+    this.mcpRegistry.remove(entry.id, entry.tool || 'invoke');
+    getLogger().info({ id }, 'MCP connector disconnected');
+    return { connector: entry, connected: false };
+  }
+
   // ── Model routing / plans / BYOK ───────────────────────────
+
+  /** Plan + usage dashboard: spend by slot, budget remaining, metering. */
+  async getPlanUsage(): Promise<any> {
+    const snap = this.modelRouter.snapshot();
+    return {
+      plan: snap.plan,
+      planName: snap.planName,
+      monthlyPriceUsd: snap.monthlyPriceUsd,
+      budget: {
+        monthlyBudgetUsd: snap.monthlyBudgetUsd,
+        spentUsd: snap.spentUsd,
+        remainingUsd: snap.remainingUsd,
+        slotBudgets: snap.slotBudgets,
+        spentBySlot: snap.spentBySlot,
+      },
+      routing: {
+        enabled: snap.enabled,
+        optimizations: snap.optimizations,
+        maxOutputTokens: snap.maxOutputTokens,
+      },
+      metering: this.metering.snapshot(),
+    };
+  }
 
   async getModelStatus(): Promise<any> {
     const snap = this.modelRouter.snapshot();
@@ -1177,6 +1271,25 @@ export class UmbraOS {
     return { ...result };
   }
 
+  /**
+   * Voice command → task: transcribe the audio, then submit the spoken text
+   * as a task (same pipeline as POST /api/chat). `target` routes like chat
+   * ('auto' | 'cloud' | 'local' | deviceId).
+   */
+  async voiceCommand(audioBase64: string, opts?: { format?: string; language?: string; target?: string }): Promise<any> {
+    if (!this.speechToText) throw new Error('Voice service not configured');
+    const audio = Buffer.from(audioBase64, 'base64');
+    const result = await this.speechToText.transcribe({
+      audio,
+      format: (opts?.format as 'wav' | 'mp3' | 'ogg' | 'webm' | 'flac' | 'm4a') || 'webm',
+      language: opts?.language,
+    });
+    const text = (result.text || '').trim();
+    if (!text) throw new Error('No speech recognized in the audio');
+    const dispatch = await this.dispatchTask(text, opts?.target || 'auto');
+    return { text, dispatch };
+  }
+
   // ── Persistent memory recall (past sessions / tasks) ──────────
 
   async recallMemory(query: string): Promise<any> {
@@ -1252,7 +1365,15 @@ export class UmbraOS {
   }
 
   async meetingStatus(): Promise<any> {
-    return { meeting: this.meetingCompanion?.status() ?? null };
+    const meeting = this.meetingCompanion?.status() ?? null;
+    return {
+      meeting: meeting
+        ? {
+            ...meeting,
+            attendees: this.meetingCompanion!.getAttendees(),
+          }
+        : null,
+    };
   }
 
   async meetingLeave(): Promise<any> {
@@ -1301,6 +1422,21 @@ export class UmbraOS {
   async meetingSpeak(text: string, opts?: { voice?: string; language?: string }): Promise<any> {
     if (!this.meetingCompanion) throw new Error('Meeting companion not available (headless/cloud mode)');
     return { result: await this.meetingCompanion.speak(text, opts) };
+  }
+
+  async meetingMute(muted: boolean): Promise<any> {
+    if (!this.meetingCompanion) throw new Error('Meeting companion not available (headless/cloud mode)');
+    return { result: await this.meetingCompanion.muteMic(muted) };
+  }
+
+  async meetingRaiseHand(raised: boolean): Promise<any> {
+    if (!this.meetingCompanion) throw new Error('Meeting companion not available (headless/cloud mode)');
+    return { result: await this.meetingCompanion.raiseHand(raised) };
+  }
+
+  async meetingChat(message: string): Promise<any> {
+    if (!this.meetingCompanion) throw new Error('Meeting companion not available (headless/cloud mode)');
+    return { result: await this.meetingCompanion.sendChat(message) };
   }
 
   /** Speak in a meeting using the configured TTS provider (meeting.tts). */
@@ -1525,6 +1661,36 @@ export class UmbraOS {
     }
   }
 
+  /** Mute/unmute the mic in the meeting tab (best-effort DOM automation). */
+  private async controlMeetingMic(muted: boolean): Promise<string> {
+    const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
+    try {
+      return await this.meetingTabJs(meetingMuteScript(provider, muted));
+    } catch (err: any) {
+      return `Mic ${muted ? 'mute' : 'unmute'} automation failed: ${err.message}. Toggle the mic yourself.`;
+    }
+  }
+
+  /** Raise/lower the hand in the meeting tab (best-effort DOM automation). */
+  private async controlMeetingHand(raised: boolean): Promise<string> {
+    const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
+    try {
+      return await this.meetingTabJs(meetingRaiseHandScript(provider, raised));
+    } catch (err: any) {
+      return `Hand ${raised ? 'raise' : 'lower'} automation failed: ${err.message}. Use the meeting UI yourself.`;
+    }
+  }
+
+  /** Send a message in the meeting chat (best-effort DOM automation). */
+  private async chatInMeeting(message: string): Promise<string> {
+    const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
+    try {
+      return await this.meetingTabJs(meetingChatScript(provider, message));
+    } catch (err: any) {
+      return `Chat automation failed: ${err.message}. Paste the message in the meeting chat yourself.`;
+    }
+  }
+
   /** Run a JS snippet in the meeting tab (the user's real Chrome). */
   private async meetingTabJs(expression: string): Promise<string> {
     if (!this.realDesktop) throw new Error('Real desktop control unavailable');
@@ -1633,6 +1799,33 @@ export class UmbraOS {
       if (reqId) this.deviceClient?.reply(reqId, { t: 'task-accepted', taskId });
       else this.deviceClient?.relay(from, { t: 'task-accepted', taskId });
     }
+  }
+
+  // ── Rust mesh (P2P transport) ─────────────────────────────
+
+  async meshStatus(): Promise<any> {
+    return this.mesh ? this.mesh.status() : { running: false, enabled: false, reason: 'mesh not configured (desktop p2p disabled or headless)' };
+  }
+
+  async meshPair(ttl = 120): Promise<any> {
+    if (!this.mesh) throw new Error('Mesh daemon not configured');
+    const pair = await this.mesh.pair(ttl);
+    return {
+      deviceId: pair.device_id,
+      wire: pair.wire,
+      exp: pair.exp,
+      qrAscii: pair.qr_ascii,
+    };
+  }
+
+  async meshPairDemo(): Promise<any> {
+    if (!this.mesh) throw new Error('Mesh daemon not configured');
+    return this.mesh.pairDemo();
+  }
+
+  async meshRevoke(deviceId: string): Promise<any> {
+    if (!this.mesh) throw new Error('Mesh daemon not configured');
+    return this.mesh.revoke(deviceId);
   }
 
   async getDevices(): Promise<any> {

@@ -78,6 +78,11 @@ export class McpRegistry {
     return [...this.tools.values()].filter(t => t.credentialService === service);
   }
 
+  /** Remove a binding (e.g. on disconnect). Returns true when it existed. */
+  remove(skill: string, tool: string): boolean {
+    return this.tools.delete(`${skill}.${tool}`);
+  }
+
   list(): McpToolBinding[] {
     return [...this.tools.values()].sort((a, b) => a.key.localeCompare(b.key));
   }

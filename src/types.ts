@@ -130,6 +130,12 @@ export interface UmbraConfig {
     signalingPort: number;
     stunServers: string[];
     relayFps: number;
+    /**
+     * Embed the Rust mesh daemon (umbra-meshd, mesh/) as an optional P2P
+     * transport: zero-knowledge identity + QR pairing + paired-device store.
+     * No-op when the binary is not built (reports running:false).
+     */
+    meshEnabled?: boolean;
   };
   /**
    * Device mesh: an always-on hub (usually the cloud) that every device

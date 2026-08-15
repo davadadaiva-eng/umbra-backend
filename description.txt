@@ -249,6 +249,32 @@ WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
     speaker-labeled, timestamped TranscriptSegments instead of a generic
     "meeting" speaker — so summaries/orders say who said what. Voice status
     (GET /api/voice/status) now reports the ASR server state.
+22. Rust mesh daemon (P2P transport): p2p.MeshBridge embeds the umbra-meshd
+    binary (mesh/, M1: zero-knowledge identity + QR pairing + paired-device
+    store) as an optional transport next to the WS signaling hub. Starts
+    automatically when p2p.meshEnabled (default true) and the binary is built;
+    otherwise reports running:false and the app boots normally. API: GET
+    /api/mesh/status, POST /api/mesh/pair (ttl), POST /api/mesh/pair-demo,
+    POST /api/mesh/revoke.
+23. Agentic tasks work without the hermes CLI: src/core/agent/InProcessAgent
+    is a bounded ReAct loop (think → tool call → observe) that runs entirely
+    in-process with the app's own LLM provider + the same tool surface (MCP
+    connectors, knowledge search, web search, files, repos). delegate steps,
+    POST /api/agent/delegate, and autoDelegate now fall back to it whenever
+    the hermes CLI is missing (ghost/desktop2 modes keep the visible step
+    loop for real-app control).
+24. MCP connector management + voice commands + meeting controls + plan
+    dashboard: GET /api/mcp/catalog supports q/category/enabled/limit/offset
+    filtering over the full 1,000+ connector catalog; GET /api/mcp/connectors
+    lists enabled ones; POST /api/mcp/disconnect disables + unregisters.
+    POST /api/voice/command {audio} transcribes and submits the spoken text
+    as a task (voice → task in one call). Meeting orders + API now cover
+    mic mute/unmute, raise/lower hand, and meeting-chat messages (best-effort
+    DOM automation like screen share), and GET /api/meeting/status reports
+    attendees (unique transcript speakers). GET /api/plan/usage returns the
+    spend dashboard (budget by slot, remaining, metering). Anthropic calls
+    mark the system prompt with cache_control: ephemeral so prompt caching
+    actually engages and the assumed cache-hit pricing holds.
 
 HOW TO CONTINUE (roadmap — what collaborators should pick up)
 ------------------------------------------------------------

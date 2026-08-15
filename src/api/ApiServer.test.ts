@@ -22,9 +22,21 @@ function makeDeps() {
     getSwarmStatus: async () => ({}),
     getAuditStats: async () => ({}),
     getRepos: async () => [{ name: 'demo', path: 'C:\\demo', exists: true, isGit: true, branch: 'main', lastCommit: 'a1b2c3 init', dirty: 0 }],
-    getMcpCatalog: async () => ({ count: 2, active: 0, entries: [] }),
+    getMcpCatalog: async (opts?: Record<string, unknown>) => ({ count: 2, active: 0, entries: [], total: 2, categories: ['Developer'], ...opts }),
     connectMcp: async (id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }) => ({ id, ...opts }),
+    disconnectMcp: async (id: string) => ({ id, enabled: false, connected: false }),
     syncExternalConnectors: async () => ({ registered: 3, sources: ['smithery'], errors: [] }),
+    getMeshStatus: async () => ({ running: true, paired_devices: 1 }),
+    meshPair: async (ttl = 120) => ({ deviceId: 'mesh-1', exp: Date.now() + ttl * 1000 }),
+    meshPairDemo: async () => ({ ok: true, match: true }),
+    meshRevoke: async (deviceId: string) => ({ ok: true, deviceId }),
+    getPlanUsage: async () => ({
+      plan: 'pro',
+      planName: 'Pro',
+      monthlyPriceUsd: 19,
+      budget: { monthlyBudgetUsd: 5, spentUsd: 0.5, remainingUsd: 4.5, slotBudgets: { fast: 1 }, spentBySlot: { fast: 0.2 } },
+      metering: { tokensUsed: 1000, tokensLimit: 10000000 },
+    }),
     getModelStatus: async () => ({
       provider: 'ollama',
       plan: 'pro',
@@ -45,6 +57,11 @@ function makeDeps() {
     setAudioDefault: async (opts: { flow?: string; deviceId?: string }) => ({ result: `set ${opts?.flow ?? 'render'} ${opts?.deviceId}` }),
     delegateHermes: async (description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }) => ({ description, ...opts }),
     generateJournalNow: async () => ({ ok: true }),
+    voiceCommand: async (audio: string, opts?: { target?: string }) => ({ text: 'remind me to ship', dispatch: { taskId: 'task-7', target: opts?.target ?? 'desktop' } }),
+    meetingMute: async (muted: boolean) => `mic ${muted ? 'muted' : 'unmuted'}`,
+    meetingRaiseHand: async (raised: boolean) => `hand ${raised ? 'raised' : 'lowered'}`,
+    meetingChat: async (message: string) => `sent: ${message}`,
+    transcribeAudio: async (_audio: string) => ({ text: 'hello world', language: 'en' }),
     mcpHandle: async (message: Record<string, unknown>) => {
       if (message.method === 'initialize') {
         return { jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'umbra', version: '0.1.0' } } };
@@ -339,5 +356,97 @@ describe('ApiServer', () => {
       body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
     });
     expect(res.status).toBe(202);
+  });
+
+  test('mcp catalog supports query filtering + pagination', async () => {
+    const res = await api('/api/mcp/catalog?q=slack&category=Developer&limit=10&offset=0');
+    expect(res.status).toBe(200);
+    expect(res.json.catalog.q).toBe('slack');
+    expect(res.json.catalog.category).toBe('Developer');
+    expect(res.json.catalog.limit).toBe(10);
+  });
+
+  test('mcp connectors lists only enabled ones', async () => {
+    const res = await api('/api/mcp/connectors');
+    expect(res.status).toBe(200);
+    expect(res.json.connectors.enabled).toBe(true);
+  });
+
+  test('mcp disconnect requires an id', async () => {
+    const res = await api('/api/mcp/disconnect', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('mcp disconnect disables a connector', async () => {
+    const res = await api('/api/mcp/disconnect', 'POST', { id: 'communication-slack' });
+    expect(res.status).toBe(200);
+    expect(res.json.connector.enabled).toBe(false);
+  });
+
+  test('mesh status reports the daemon', async () => {
+    const res = await api('/api/mesh/status');
+    expect(res.status).toBe(200);
+    expect(res.json.running).toBe(true);
+    expect(res.json.paired_devices).toBe(1);
+  });
+
+  test('mesh pair creates a pairing payload', async () => {
+    const res = await api('/api/mesh/pair', 'POST', { ttl: 60 });
+    expect(res.status).toBe(200);
+    expect(res.json.pair.deviceId).toBe('mesh-1');
+  });
+
+  test('mesh revoke requires a deviceId', async () => {
+    const res = await api('/api/mesh/revoke', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('mesh revoke removes a paired device', async () => {
+    const res = await api('/api/mesh/revoke', 'POST', { deviceId: 'mesh-1' });
+    expect(res.status).toBe(200);
+    expect(res.json.revoked.ok).toBe(true);
+  });
+
+  test('voice command transcribes and dispatches a task', async () => {
+    const res = await api('/api/voice/command', 'POST', { audio: 'QUJD', target: 'local' });
+    expect(res.status).toBe(200);
+    expect(res.json.command.text).toBe('remind me to ship');
+    expect(res.json.command.dispatch.target).toBe('local');
+  });
+
+  test('voice command requires audio', async () => {
+    const res = await api('/api/voice/command', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('meeting mute toggles the mic', async () => {
+    const res = await api('/api/meeting/mute', 'POST', { muted: true });
+    expect(res.status).toBe(200);
+    expect(res.json.result).toBe('mic muted');
+  });
+
+  test('meeting raise-hand toggles the hand', async () => {
+    const res = await api('/api/meeting/raise-hand', 'POST', { raised: true });
+    expect(res.status).toBe(200);
+    expect(res.json.result).toBe('hand raised');
+  });
+
+  test('meeting chat requires a message', async () => {
+    const res = await api('/api/meeting/chat', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('meeting chat sends a message', async () => {
+    const res = await api('/api/meeting/chat', 'POST', { message: 'brb' });
+    expect(res.status).toBe(200);
+    expect(res.json.result).toBe('sent: brb');
+  });
+
+  test('plan usage returns the spend dashboard', async () => {
+    const res = await api('/api/plan/usage');
+    expect(res.status).toBe(200);
+    expect(res.json.plan).toBe('pro');
+    expect(res.json.budget.remainingUsd).toBe(4.5);
+    expect(res.json.metering.tokensLimit).toBe(10000000);
   });
 });

@@ -177,7 +177,14 @@ export class LLMConnector {
       model,
       max_tokens: options.maxTokens ?? 4096,
       temperature: options.temperature ?? 0.3,
-      system: systemMsg ? (typeof systemMsg.content === 'string' ? systemMsg.content : systemMsg.content.map(c => c.type === 'text' ? c.text : '').join('\n')) : undefined,
+      // Prompt caching: mark the system prompt as ephemeral-cacheable so
+      // repeated calls with the same prefix pay cache-hit input prices
+      // (the router's cost model already assumes a cache-hit ratio).
+      system: systemMsg
+        ? typeof systemMsg.content === 'string'
+          ? [{ type: 'text', text: systemMsg.content, cache_control: { type: 'ephemeral' } }]
+          : systemMsg.content.map(c => (c.type === 'text' ? { ...c, cache_control: { type: 'ephemeral' } } : c))
+        : undefined,
       messages: otherMessages.map(m => ({
         role: m.role === 'assistant' ? 'assistant' : 'user',
         content: typeof m.content === 'string' ? m.content : m.content.map(c => this.anthropicContentPart(c)),

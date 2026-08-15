@@ -129,6 +129,65 @@ describe('MeetingCompanion', () => {
     expect(orders[0].status).toBe('done');
   });
 
+  it('mutes/unmutes the mic and raises/lowers the hand via onMeetingControl', async () => {
+    const onMeetingControl = jest.fn().mockResolvedValue('done');
+    const c = make({ onMeetingControl });
+    await c.join('https://meet.example/abc');
+    expect(await c.muteMic(true)).toBe('done');
+    expect(await c.muteMic(false)).toBe('done');
+    expect(await c.raiseHand(true)).toBe('done');
+    expect(await c.raiseHand(false)).toBe('done');
+    expect(onMeetingControl).toHaveBeenNthCalledWith(1, 'mute');
+    expect(onMeetingControl).toHaveBeenNthCalledWith(2, 'unmute');
+    expect(onMeetingControl).toHaveBeenNthCalledWith(3, 'raise_hand');
+    expect(onMeetingControl).toHaveBeenNthCalledWith(4, 'lower_hand');
+  });
+
+  it('sends a chat message via onChatMessage', async () => {
+    const onChatMessage = jest.fn().mockResolvedValue('sent');
+    const c = make({ onChatMessage });
+    await c.join('https://meet.example/abc');
+    expect(await c.sendChat('we will be late')).toBe('sent');
+    expect(onChatMessage).toHaveBeenCalledWith('we will be late');
+  });
+
+  it('executes mute / raise-hand / chat orders heard in the transcript', async () => {
+    const onMeetingControl = jest.fn().mockResolvedValue('done');
+    const onChatMessage = jest.fn().mockResolvedValue('sent');
+    const stt = {
+      transcribe: jest.fn()
+        .mockResolvedValueOnce({ text: 'Hey Umbra, mute your mic' })
+        .mockResolvedValueOnce({ text: 'Ok umbra raise your hand' })
+        .mockResolvedValueOnce({ text: 'Umbra, send a message in the chat saying we will be late' }),
+    };
+    const c = make({ stt, onMeetingControl, onChatMessage });
+    await c.join('https://meet.example/abc');
+    await c.feedAudio(Buffer.from('a'), 'wav');
+    await c.feedAudio(Buffer.from('b'), 'wav');
+    await c.feedAudio(Buffer.from('c'), 'wav');
+    expect(onMeetingControl).toHaveBeenCalledWith('mute');
+    expect(onMeetingControl).toHaveBeenCalledWith('raise_hand');
+    expect(onChatMessage).toHaveBeenCalled();
+    const intents = c.getOrders().map(o => o.intent);
+    expect(intents).toContain('mute');
+    expect(intents).toContain('raise_hand');
+    expect(intents).toContain('chat');
+  });
+
+  it('exposes attendees from diarized transcript speakers', async () => {
+    const diarize = {
+      transcribe: jest.fn().mockResolvedValue([
+        { speaker: 'SPEAKER_00', text: 'hi', startMs: 0, endMs: 100 },
+        { speaker: 'SPEAKER_01', text: 'hey', startMs: 200, endMs: 300 },
+        { speaker: 'SPEAKER_00', text: 'again', startMs: 400, endMs: 500 },
+      ]),
+    };
+    const c = make({ diarize, stt: undefined });
+    await c.join('https://meet.example/abc');
+    await c.feedAudio(Buffer.from('audio'), 'wav');
+    expect(c.getAttendees()).toEqual(['SPEAKER_00', 'SPEAKER_01']);
+  });
+
   it('speak() delegates to onSpeak or falls back to onExecute', async () => {
     const onSpeak = jest.fn().mockResolvedValue('Spoke');
     const a = make({ onSpeak });

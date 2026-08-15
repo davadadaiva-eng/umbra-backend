@@ -58,6 +58,7 @@ const DEFAULT_CONFIG: UmbraConfig = {
       'stun:stun1.l.google.com:19302',
     ],
     relayFps: 10,
+    meshEnabled: true,
   },
   devices: {
     enabled: true,

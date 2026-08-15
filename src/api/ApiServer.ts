@@ -27,10 +27,12 @@ export interface ApiServerDeps {
   getSwarmStatus(): Promise<unknown>;
   getAuditStats(): Promise<unknown>;
   getRepos(): Promise<unknown>;
-  getMcpCatalog(): Promise<unknown>;
+  getMcpCatalog(opts?: { q?: string; category?: string; enabled?: boolean; limit?: number; offset?: number }): Promise<unknown>;
   connectMcp(id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }): Promise<unknown>;
+  disconnectMcp(id: string): Promise<unknown>;
   syncExternalConnectors(opts?: { maxPerSource?: number }): Promise<unknown>;
   getModelStatus(): Promise<unknown>;
+  getPlanUsage(): Promise<unknown>;
   testLlm(): Promise<unknown>;
   configureProvider(patch: { provider?: string; endpoint?: string; apiKey?: string; models?: Record<string, string>; tier?: string }): Promise<unknown>;
   /** Activate a plan after payment (assigns the plan's token budget). */
@@ -40,6 +42,8 @@ export interface ApiServerDeps {
   generateImage(prompt: string, opts?: { width?: number; height?: number; steps?: number }): Promise<unknown>;
   getVoiceStatus(): Promise<unknown>;
   transcribeAudio(audioBase64: string, opts?: { format?: string; language?: string }): Promise<unknown>;
+  /** Voice command → task: transcribe the audio and submit it as a task. */
+  voiceCommand(audioBase64: string, opts?: { format?: string; language?: string; target?: string }): Promise<unknown>;
   speakText(text: string, opts?: { voice?: string; language?: string; provider?: string; engine?: string }): Promise<unknown>;
   listTtsVoices(): Promise<unknown>;
   recallMemory(query: string): Promise<unknown>;
@@ -58,6 +62,9 @@ export interface ApiServerDeps {
   meetingStopShare(): Promise<unknown>;
   meetingOrders(): Promise<unknown>;
   meetingSpeak(text: string, opts?: { voice?: string; language?: string }): Promise<unknown>;
+  meetingMute(muted: boolean): Promise<unknown>;
+  meetingRaiseHand(raised: boolean): Promise<unknown>;
+  meetingChat(message: string): Promise<unknown>;
   listAudioDevices(): Promise<unknown>;
   setAudioDefault(opts: { flow?: 'render' | 'capture'; deviceId?: string }): Promise<unknown>;
   listDevices(): Promise<unknown>;
@@ -67,6 +74,11 @@ export interface ApiServerDeps {
   sendToDevice(deviceId: string, msg: Record<string, unknown>): Promise<unknown>;
   delegateHermes(description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }): Promise<unknown>;
   generateJournalNow(): Promise<unknown>;
+  /** Rust mesh daemon status (P2P transport). */
+  getMeshStatus(): Promise<unknown>;
+  meshPair(ttl?: number): Promise<unknown>;
+  meshPairDemo(): Promise<unknown>;
+  meshRevoke(deviceId: string): Promise<unknown>;
   /** MCP JSON-RPC entrypoint — returns null for notifications (HTTP 202). */
   mcpHandle(message: Record<string, unknown>): Promise<McpJsonRpcResponse | null>;
   shutdown(): void;
@@ -298,6 +310,17 @@ export class ApiServer {
           language: body.language !== undefined ? String(body.language) : undefined,
         }) };
       }],
+      [/^POST \/api\/meeting\/mute$/, async (_url, body) => ({
+        result: await this.deps.meetingMute(body.muted !== false),
+      })],
+      [/^POST \/api\/meeting\/raise-hand$/, async (_url, body) => ({
+        result: await this.deps.meetingRaiseHand(body.raised !== false),
+      })],
+      [/^POST \/api\/meeting\/chat$/, async (_url, body) => {
+        const message = String(body.message || '').trim();
+        if (!message) throw new Error('message is required');
+        return { result: await this.deps.meetingChat(message) };
+      }],
       [/^GET \/api\/audio\/devices$/, async () => ({ audio: await this.deps.listAudioDevices() })],
       [/^POST \/api\/audio\/set-default$/, async (_url, body) => {
         const flow = body.flow === 'capture' ? 'capture' as const : 'render' as const;
@@ -312,8 +335,25 @@ export class ApiServer {
       [/^GET \/api\/swarm$/, async () => ({ swarm: await this.deps.getSwarmStatus() })],
       [/^GET \/api\/vault\/stats$/, async () => ({ vault: await this.deps.getAuditStats() })],
       [/^GET \/api\/repos$/, async () => ({ repos: await this.deps.getRepos() })],
-      [/^GET \/api\/mcp\/catalog$/, async () => ({ catalog: await this.deps.getMcpCatalog() })],
+      [/^GET \/api\/mcp\/catalog$/, async url => ({
+        catalog: await this.deps.getMcpCatalog({
+          q: url.searchParams.get('q') || undefined,
+          category: url.searchParams.get('category') || undefined,
+          enabled: url.searchParams.get('enabled') !== null ? url.searchParams.get('enabled') === 'true' : undefined,
+          limit: url.searchParams.get('limit') !== null ? Number(url.searchParams.get('limit')) : undefined,
+          offset: url.searchParams.get('offset') !== null ? Number(url.searchParams.get('offset')) : undefined,
+        }),
+      })],
+      [/^GET \/api\/mcp\/connectors$/, async () => ({
+        connectors: await this.deps.getMcpCatalog({ enabled: true }),
+      })],
+      [/^POST \/api\/mcp\/disconnect$/, async (_url, body) => {
+        const id = String(body.id || '');
+        if (!id) throw new Error('id is required');
+        return { connector: await this.deps.disconnectMcp(id) };
+      }],
       [/^GET \/api\/llm\/models$/, async () => this.deps.getModelStatus()],
+      [/^GET \/api\/plan\/usage$/, async () => this.deps.getPlanUsage()],
       [/^POST \/api\/llm\/test$/, async () => this.deps.testLlm()],
       [/^GET \/api\/config\/provider$/, async () => this.deps.getProviderConfig()],
       [/^POST \/api\/plan\/activate$/, async (_url, body) => {
@@ -362,6 +402,17 @@ export class ApiServer {
           }),
         };
       }],
+      [/^POST \/api\/voice\/command$/, async (_url, body) => {
+        const audio = String(body.audio || '');
+        if (!audio) throw new Error('audio (base64) is required');
+        return {
+          command: await this.deps.voiceCommand(audio, {
+            format: body.format !== undefined ? String(body.format) : undefined,
+            language: body.language !== undefined ? String(body.language) : undefined,
+            target: body.target !== undefined ? String(body.target) : undefined,
+          }),
+        };
+      }],
       [/^POST \/api\/mcp\/connect$/, async (_url, body) => {
         const id = String(body.id || '');
         if (!id) throw new Error('id is required');
@@ -387,6 +438,16 @@ export class ApiServer {
         return { output: await this.deps.delegateHermes(description, opts) };
       }],
       [/^POST \/api\/journal\/generate$/, async () => ({ journal: await this.deps.generateJournalNow() })],
+      [/^GET \/api\/mesh\/status$/, async () => this.deps.getMeshStatus()],
+      [/^POST \/api\/mesh\/pair$/, async (_url, body) => ({
+        pair: await this.deps.meshPair(body.ttl !== undefined ? Number(body.ttl) : 120),
+      })],
+      [/^POST \/api\/mesh\/pair-demo$/, async () => ({ pair: await this.deps.meshPairDemo() })],
+      [/^POST \/api\/mesh\/revoke$/, async (_url, body) => {
+        const deviceId = String(body.deviceId || '');
+        if (!deviceId) throw new Error('deviceId is required');
+        return { revoked: await this.deps.meshRevoke(deviceId) };
+      }],
       [/^GET \/api\/devices$/, async () => ({ devices: await this.deps.listDevices() })],
       [/^POST \/api\/devices\/invite$/, async (_url, body) => {
         const name = body.name !== undefined ? String(body.name) : '';

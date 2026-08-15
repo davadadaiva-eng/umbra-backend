@@ -17,6 +17,11 @@ import { TranscriptSegment } from './MeetingAgent';
 export type MeetingOrderIntent =
   | 'share_screen'
   | 'stop_share'
+  | 'mute'
+  | 'unmute'
+  | 'raise_hand'
+  | 'lower_hand'
+  | 'chat'
   | 'note'
   | 'search'
   | 'reminder'
@@ -42,6 +47,11 @@ const TRIGGER = /(?:^|[,.!?;:]\s*)(?:(?:hey|ok|okay|yo|oi)\s+)?(?:umbra|assistan
 
 const SHARE = /(?:share|present|show)\s*(?:your|my|the)?\s*(?:screen|desktop|window|display)/i;
 const STOP_SHARE = /(?:stop|end|finish)\s*(?:sharing|presenting|the\s*share|share)/i;
+const UNMUTE = /(?:unmute|turn\s+(?:your\s+)?(?:mic|microphone)\s+on|turn\s+on\s+(?:your\s+)?(?:mic|microphone))/i;
+const MUTE = /(?:mute|turn\s+(?:your\s+)?(?:mic|microphone)\s+off|turn\s+off\s+(?:your\s+)?(?:mic|microphone))/i;
+const LOWER_HAND = /(?:lower|put\s+down|drop)\s*(?:your\s+)?(?:hand|raised\s+hand)/i;
+const RAISE_HAND = /(?:raise|put\s+up)\s*(?:your\s+|your\s+virtual\s+)?hand/i;
+const CHAT = /(?:send|post|put|drop|write|type|paste)\s+(?:a\s+|the\s+)?(?:message|chat|note)|(?:send|post|paste)\s+.*?\bin\s+(?:the\s+)?(?:meeting\s+)?chat\b/i;
 const NOTE = /(?:take\s+a\s+note|note\s+down|note\s+this|write\s+down|jot\s+down|remember\s+(?:that|to|this))/i;
 const SEARCH = /(?:search|look\s+up|google|find\s+(?:me|out)|check\s+the\s+web)/i;
 const REMINDER = /(?:remind\s+(?:me|us)|set\s+a\s+reminder)/i;
@@ -52,6 +62,11 @@ export function classifyOrder(text: string): MeetingOrderIntent {
   const t = text.trim();
   if (SHARE.test(t)) return 'share_screen';
   if (STOP_SHARE.test(t)) return 'stop_share';
+  if (UNMUTE.test(t)) return 'unmute';
+  if (MUTE.test(t)) return 'mute';
+  if (LOWER_HAND.test(t)) return 'lower_hand';
+  if (RAISE_HAND.test(t)) return 'raise_hand';
+  if (CHAT.test(t)) return 'chat';
   if (NOTE.test(t)) return 'note';
   if (SEARCH.test(t)) return 'search';
   if (REMINDER.test(t)) return 'reminder';

@@ -24,6 +24,7 @@ import { McpRouter } from '../mcp/McpRouter';
 import { MeteringService } from '../metering/MeteringService';
 import { GraphifyContextEngine } from '../graphify/GraphifyContextEngine';
 import { HermesAgentBridge } from './HermesAgent';
+import { InProcessAgent } from './InProcessAgent';
 import { eventBus } from '../EventBus';
 import { getLogger } from '../Logger';
 export class AgentRuntime {
@@ -51,6 +52,8 @@ export class AgentRuntime {
   private hermes?: HermesAgentBridge;
   /** When true, whole tasks are silently routed through the dedicated reasoning engine. */
   private autoDelegate: boolean = false;
+  /** In-process agentic loop — fallback when the hermes CLI is not installed. */
+  private inProcess?: InProcessAgent;
   private activeTasks: Map<string, Task> = new Map();
   private maxSteps: number = 15;
   /** Durable task queue — enables cross-restart (and cross-node) resume. */
@@ -581,8 +584,20 @@ export class AgentRuntime {
    * returns false so the caller falls back to the visible step-by-step loop.
    */
   private async tryAutoDelegate(task: Task): Promise<boolean> {
-    if (!this.autoDelegate || !this.hermes?.isInstalled()) return false;
-    getLogger().info({ taskId: task.id }, 'Routing task through built-in reasoning engine');
+    if (!this.autoDelegate) return false;
+    const hermesReady = this.hermes?.isInstalled() === true;
+    if (!hermesReady && !this.inProcessAgent()) {
+      getLogger().debug('Auto-delegate skipped — no dedicated engine (CLI or in-process) available');
+      return false;
+    }
+    // The in-process fallback only has web/knowledge/MCP/file tools, so in
+    // ghost/desktop2 modes we keep the visible step loop (which can drive
+    // real apps and the desktop). Explicit `delegate` steps and the API still
+    // use the fallback everywhere.
+    if (!hermesReady && (process.env['UMBRA_ENGINE'] || 'browseruse') !== 'browseruse' && this.realDesktop) {
+      return false;
+    }
+    getLogger().info({ taskId: task.id, engine: hermesReady ? 'hermes' : 'in-process' }, 'Routing task through dedicated reasoning engine');
     try {
       const output = await this.delegateTask(task.description);
       const started = task.startedAt || new Date();
@@ -617,33 +632,77 @@ export class AgentRuntime {
   }
 
   /**
-   * Delegate a step (or the whole task) to the built-in dedicated reasoning
-   * engine. Runs headless one-shot mode and returns the final response text.
+   * Delegate a step (or the whole task) to the dedicated reasoning engine.
+   * Prefers the hermes CLI; falls back to the in-process agent loop when the
+   * CLI is not installed, so agentic delegation works on every node.
    */
   async delegateToHermes(task: Task, plannedStep?: PlannedStep): Promise<string> {
-    if (!this.hermes) throw new Error('Dedicated reasoning engine not configured');
-    if (!this.hermes.isInstalled()) throw new Error('Dedicated reasoning engine not available');
-
     const prompt = String(plannedStep?.params?.prompt || task.description);
     const provider = plannedStep?.params?.provider ? String(plannedStep.params.provider) : undefined;
     const model = plannedStep?.params?.model ? String(plannedStep.params.model) : undefined;
     const maxTurns = plannedStep?.params?.maxTurns ? Number(plannedStep.params.maxTurns) : undefined;
 
-    const res = await this.hermes.runTask(prompt, { provider, model, maxTurns });
-    if (res.ok) {
-      this.vault?.log('task_delegated', task.id, { engine: 'subagent', durationMs: res.durationMs }, res.output);
-      return res.output;
+    if (this.hermes?.isInstalled()) {
+      const res = await this.hermes.runTask(prompt, { provider, model, maxTurns });
+      if (res.ok) {
+        this.vault?.log('task_delegated', task.id, { engine: 'subagent', durationMs: res.durationMs }, res.output);
+        return res.output;
+      }
+      throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
     }
-    throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
+
+    // Fallback: in-process agentic loop with the same tool surface.
+    const agent = this.inProcessAgent();
+    if (!agent) throw new Error('Dedicated reasoning engine not configured');
+    const res = await agent.run(prompt);
+    if (!res.ok) throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
+    this.vault?.log('task_delegated', task.id, { engine: 'in-process', turns: res.turns, durationMs: res.durationMs }, res.output);
+    return res.output;
   }
 
   /** One-shot task execution handed entirely to the dedicated reasoning engine. */
   async delegateTask(description: string, options: { provider?: string; model?: string; timeoutMs?: number } = {}): Promise<string> {
-    if (!this.hermes) throw new Error('Dedicated reasoning engine not configured');
-    if (!this.hermes.isInstalled()) throw new Error('Dedicated reasoning engine not available');
-    const res = await this.hermes.runTask(description, options);
+    const prompt = description;
+    if (this.hermes?.isInstalled()) {
+      const res = await this.hermes.runTask(prompt, options);
+      if (!res.ok) throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
+      return res.output;
+    }
+    const agent = this.inProcessAgent(options.timeoutMs);
+    if (!agent) throw new Error('Dedicated reasoning engine not configured');
+    const res = await agent.run(prompt);
     if (!res.ok) throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
     return res.output;
+  }
+
+  /** Build (once) the in-process agentic loop bound to this runtime's tools. */
+  private inProcessAgent(timeoutMs?: number): InProcessAgent | undefined {
+    if (this.inProcess) return this.inProcess;
+    const tools = {
+      mcpCall: this.mcpRouter
+        ? async (skill: string, tool: string, input: Record<string, unknown>) => {
+            const r = await this.mcpRouter!.call(skill, tool, input);
+            return { ok: r.ok, output: r.output, error: r.error };
+          }
+        : undefined,
+      searchKnowledge: async (query: string) => this.knowledge.search(query),
+      webSearch: this.desktop2
+        ? async (query: string) => {
+            await this.desktop2!.executeAction('navigate', { url: `https://www.bing.com/search?q=${encodeURIComponent(query)}` });
+            return this.desktop2!.extract();
+          }
+        : undefined,
+      fileRead: this.workspace ? (p: string) => this.workspace!.read(p) : undefined,
+      fileWrite: this.workspace ? (p: string, content: string) => this.workspace!.write(p, content) : undefined,
+      repoRun: this.repos
+        ? async (command: string, _cwd?: string) => {
+            const res = await this.repos!.run('', command, 120_000);
+            return { stdout: res.stdout, stderr: res.stderr, code: res.code };
+          }
+        : undefined,
+    };
+    this.inProcess = new InProcessAgent({ llm: this.llm, tools, timeoutMs });
+    return this.inProcess;
   }
 
   private async webSearchStep(plannedStep: PlannedStep): Promise<string> {
