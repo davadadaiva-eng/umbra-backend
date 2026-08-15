@@ -23,6 +23,16 @@ $s.Speak($Text)
 $s.Dispose()
 `;
 
+const PS_SYNTHESIZE = `param([string]$Text, [string]$OutPath, [int]$Rate)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$s.Rate = $Rate
+$s.SetOutputToWaveFile($OutPath)
+$s.Speak($Text)
+$s.Dispose()
+`;
+
 export interface SpeakOptions {
   /** Speech rate: -10 (slow) .. 10 (fast); 0 is normal. */
   rate?: number;
@@ -65,5 +75,42 @@ export class WindowsTts {
       getLogger().warn({ err: msg }, 'Windows TTS speak failed');
       throw new Error(`TTS failed: ${msg || 'unknown error'}`);
     }
+  }
+
+  /**
+   * Render speech to a WAV buffer without playing it — used to route Umbra's
+   * reply into a meeting via a virtual cable (AudioRouter) instead of the
+   * default speakers.
+   */
+  async synthesize(text: string, opts: SpeakOptions = {}): Promise<Buffer> {
+    if (!this.available) {
+      throw new Error('Windows TTS is only available on Windows');
+    }
+    const t = text.trim();
+    if (!t) throw new Error('Nothing to say');
+
+    fs.mkdirSync(this.tmpDir, { recursive: true });
+    const psPath = path.join(this.tmpDir, 'tts-synthesize.ps1');
+    fs.writeFileSync(psPath, PS_SYNTHESIZE, 'utf-8');
+    const outPath = path.join(this.tmpDir, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.wav`);
+
+    const timeoutMs = Math.max(8000, Math.min(120000, 2000 + t.length * 120));
+    try {
+      execSync(
+        `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${psPath}" "${t.replace(/"/g, '`"')}" "${outPath}" ${opts.rate ?? 0}`,
+        { timeout: timeoutMs, windowsHide: true, maxBuffer: 4096 },
+      );
+    } catch (err: any) {
+      const msg = (err.stderr || err.message || '').toString().slice(0, 300);
+      getLogger().warn({ err: msg }, 'Windows TTS synthesize failed');
+      throw new Error(`TTS synthesize failed: ${msg || 'unknown error'}`);
+    }
+
+    if (!fs.existsSync(outPath)) {
+      throw new Error('Windows TTS produced no audio file');
+    }
+    const buffer = fs.readFileSync(outPath);
+    try { fs.unlinkSync(outPath); } catch { }
+    return buffer;
   }
 }

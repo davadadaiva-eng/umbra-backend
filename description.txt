@@ -227,6 +227,19 @@ WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
     voice:"<profile>", language, engine} to speak in a cloned voice; voice
     cloning + 23 languages + 7 engines come from the Voicebox app itself.
     GET /api/voice/tts/voices now also lists running Voicebox profiles.
+20. Virtual-cable meeting audio routing: src/core/audio/AudioRouter.ts
+    enumerates Windows endpoints (MMDevices registry + IPolicyConfig COM) and
+    plays a synthesized WAV on a chosen device by temporarily switching the
+    default render endpoint, then restoring it. Set meeting.audioCable =
+    "auto" (or a device name) so meeting replies (voicebox/vibevoice/SAPI)
+    are synthesized to WAV and played into the cable's    "CABLE Input", and set
+    the call's mic to "CABLE Output" (or meeting.routeMic = true to auto-set
+    the default mic on join) so participants actually HEAR Umbra instead of
+    just the local speakers. The pre-meeting default mic is remembered and
+    restored automatically when the meeting ends (POST /api/meeting/leave or
+    app shutdown), so routeMic never leaves the cable selected. GET
+    /api/audio/devices lists endpoints;
+    POST /api/audio/set-default {flow, deviceId} switches the default device.
 
 HOW TO CONTINUE (roadmap — what collaborators should pick up)
 ------------------------------------------------------------

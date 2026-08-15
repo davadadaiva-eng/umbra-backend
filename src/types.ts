@@ -196,6 +196,14 @@ export interface UmbraConfig {
     ordersEnabled?: boolean;
     /** Allow screen-share actions (share/stop) during a meeting. */
     screenShare?: boolean;
+    /**
+     * Route Umbra's spoken replies to a virtual audio cable (VB-Cable) so call
+     * participants hear them, instead of only the local speakers. 'none' =
+     * local speakers; 'auto' = auto-detect the cable; or a device name/id.
+     */
+    audioCable?: 'none' | 'auto' | string;
+    /** When true, joining a meeting sets the default mic to the cable's output side so the call picks up Umbra automatically. */
+    routeMic?: boolean;
   };
   /** Screen awareness: Umbra sees the live screen + cursor and answers questions about it. */
   awareness: {

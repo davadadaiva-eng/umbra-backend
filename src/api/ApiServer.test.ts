@@ -41,6 +41,8 @@ function makeDeps() {
     generateImage: async (prompt: string) => ({ imagePath: `/tmp/${prompt.toLowerCase().replace(/\s+/g, '-')}.png`, provider: 'huggingface', model: 'FLUX.1-schnell' }),
     recallMemory: async (query: string) => ({ query, facts: [{ text: 'user prefers dark mode' }], similar: [{ text: 'built the routing engine', distance: 0.1 }], recent: [{ description: 'routing', status: 'completed' }] }),
     rememberMemory: async (text: string) => ({ id: 1, remembered: text, total: 1 }),
+    listAudioDevices: async () => ({ available: true, devices: [{ id: '{x}.{y}', name: 'CABLE Input', flow: 'render', isDefault: false }] }),
+    setAudioDefault: async (opts: { flow?: string; deviceId?: string }) => ({ result: `set ${opts?.flow ?? 'render'} ${opts?.deviceId}` }),
     delegateHermes: async (description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }) => ({ description, ...opts }),
     generateJournalNow: async () => ({ ok: true }),
     mcpHandle: async (message: Record<string, unknown>) => {
@@ -138,6 +140,24 @@ describe('ApiServer', () => {
     expect(res.status).toBe(200);
     expect(res.json.repos).toHaveLength(1);
     expect(res.json.repos[0].branch).toBe('main');
+  });
+
+  test('audio devices list', async () => {
+    const res = await api('/api/audio/devices');
+    expect(res.status).toBe(200);
+    expect(res.json.audio.available).toBe(true);
+    expect(res.json.audio.devices[0].name).toBe('CABLE Input');
+  });
+
+  test('audio set-default requires deviceId', async () => {
+    const res = await api('/api/audio/set-default', 'POST', { flow: 'render' });
+    expect(res.status).toBe(500);
+  });
+
+  test('audio set-default', async () => {
+    const res = await api('/api/audio/set-default', 'POST', { flow: 'capture', deviceId: '{x}.{out}' });
+    expect(res.status).toBe(200);
+    expect(res.json.result).toBe('set capture {x}.{out}');
   });
 
   test('mcp catalog', async () => {

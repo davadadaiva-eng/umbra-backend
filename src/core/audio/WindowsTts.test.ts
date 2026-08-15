@@ -11,4 +11,10 @@ describe('WindowsTts', () => {
     const tts = new WindowsTts('/tmp/umbra');
     await expect(tts.speak('hello')).rejects.toThrow(/Windows only/);
   });
+
+  it('rejects synthesize() when SAPI is not available', async () => {
+    if (process.platform === 'win32') return; // avoid synthesizing in CI
+    const tts = new WindowsTts('/tmp/umbra');
+    await expect(tts.synthesize('hello')).rejects.toThrow(/Windows only/);
+  });
 });

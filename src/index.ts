@@ -43,6 +43,7 @@ import { WindowsTts } from './core/audio/WindowsTts';
 import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
 import { VoiceboxClient } from './core/voice/VoiceboxClient';
 import { LoopbackRecorder } from './core/audio/LoopbackRecorder';
+import { AudioRouter, findCable } from './core/audio/AudioRouter';
 import { CommandHUD } from './overlay/CommandHUD';
 import { GlobalHotkey } from './overlay/GlobalHotkey';
 import { ApiServer } from './api/ApiServer';
@@ -132,6 +133,9 @@ export class UmbraOS {
   private meetings!: MeetingAgent;
   private meetingCompanion?: MeetingCompanion;
   private loopbackRecorder?: LoopbackRecorder;
+  private audioRouter?: AudioRouter;
+  /** Default mic before routeMeetingMic switched it to the cable (restored on leave). */
+  private savedMicDeviceId?: string;
   private windowsTts?: WindowsTts;
   private vibeVoiceTts?: VibeVoiceTts;
   private voiceboxClient?: VoiceboxClient;
@@ -485,6 +489,8 @@ export class UmbraOS {
       meetingStopShare: () => this.meetingStopShare(),
       meetingOrders: () => this.meetingOrders(),
       meetingSpeak: (text, opts) => this.meetingSpeak(text, opts),
+      listAudioDevices: () => this.listAudioDevices(),
+      setAudioDefault: opts => this.setAudioDefault(opts),
       listDevices: () => this.getDevices(),
       createDeviceInvite: name => this.createDeviceInvite(name),
       joinDevice: (code, meta) => this.joinDevice(code, meta),
@@ -653,6 +659,7 @@ export class UmbraOS {
     // ── Meeting Companion (join/hear/act/leave) — desktop only ──
     if (!this.headless) {
       this.loopbackRecorder = new LoopbackRecorder({ dataDir: config.paths.dataDir });
+      this.audioRouter = new AudioRouter({ dataDir: config.paths.dataDir });
       this.windowsTts = new WindowsTts(config.paths.dataDir);
       this.meetingCompanion = new MeetingCompanion({
         stt: this.speechToText.available
@@ -1205,7 +1212,16 @@ export class UmbraOS {
 
   async meetingJoin(url: string, opts?: { title?: string; topics?: string[] }): Promise<any> {
     if (!this.meetingCompanion) throw new Error('Meeting companion not available (headless/cloud mode)');
-    return this.meetingCompanion.join(url, opts);
+    const meeting = await this.meetingCompanion.join(url, opts);
+    const cable = this.configManager.raw.meeting.audioCable;
+    if (this.configManager.raw.meeting.routeMic && cable && cable !== 'none') {
+      try {
+        await this.routeMeetingMic();
+      } catch (err: any) {
+        getLogger().warn({ err: err.message }, 'Could not auto-route the meeting mic to the virtual cable');
+      }
+    }
+    return meeting;
   }
 
   async meetingStartListening(): Promise<any> {
@@ -1220,7 +1236,20 @@ export class UmbraOS {
 
   async meetingLeave(): Promise<any> {
     if (!this.meetingCompanion) throw new Error('No active meeting');
-    return this.meetingCompanion.leave();
+    let outcome: any;
+    try {
+      outcome = await this.meetingCompanion.leave();
+    } finally {
+      // Restore the original mic even if leave/summary throws — the cable must
+      // not stay selected after the meeting ends.
+      try {
+        const restored = await this.restoreMeetingMic();
+        if (restored) getLogger().info('Meeting mic restored to its original default');
+      } catch (err: any) {
+        getLogger().warn({ err: err.message }, 'Could not restore the meeting mic to its original default');
+      }
+    }
+    return outcome;
   }
 
   async meetingExecute(action: string, params: Record<string, unknown>): Promise<any> {
@@ -1255,6 +1284,14 @@ export class UmbraOS {
 
   /** Speak in a meeting using the configured TTS provider (meeting.tts). */
   private async speakForMeeting(text: string, opts?: { voice?: string; language?: string }): Promise<string> {
+    const cable = this.configManager.raw.meeting.audioCable;
+    if (cable && cable !== 'none') {
+      const deviceId = await this.resolveCableDevice(cable);
+      const { wav, label } = await this.synthesizeWav(text, opts);
+      await this.audioRouter!.play(wav, deviceId);
+      return `Spoke into the meeting via virtual cable (${label})`;
+    }
+
     const tts = this.configManager.raw.meeting.tts;
     if (tts === 'voicebox') {
       if (!this.voiceboxClient || !(await this.voiceboxClient.isRunning())) {
@@ -1276,6 +1313,7 @@ export class UmbraOS {
         voice: opts?.voice || this.configManager.raw.voice.vibevoiceVoice,
         language: opts?.language || this.configManager.raw.voice.vibevoiceLanguage,
       });
+      await this.audioRouter?.play(res.wav);
       return `Spoke (${res.voice})`;
     }
     if (tts === 'local') {
@@ -1283,7 +1321,82 @@ export class UmbraOS {
       await this.windowsTts.speak(text);
       return 'Spoke';
     }
-    throw new Error('Meeting TTS is disabled — set meeting.tts to local or vibevoice');
+    throw new Error('Meeting TTS is disabled — set meeting.tts to local, vibevoice or voicebox');
+  }
+
+  /** Synthesize meeting speech to WAV bytes using the configured provider (meeting.tts). */
+  private async synthesizeWav(text: string, opts?: { voice?: string; language?: string }): Promise<{ wav: Buffer; label: string }> {
+    const tts = this.configManager.raw.meeting.tts;
+    if (tts === 'voicebox') {
+      if (!this.voiceboxClient || !(await this.voiceboxClient.isRunning())) {
+        throw new Error('Voicebox is not running — start the Voicebox app (http://127.0.0.1:17493)');
+      }
+      const voice = this.configManager.raw.voice;
+      const profile = opts?.voice || voice.voiceboxProfile || undefined;
+      const wav = await this.voiceboxClient.synthesize(text, {
+        profile,
+        language: opts?.language,
+        engine: voice.voiceboxEngine,
+      });
+      return { wav, label: `voicebox (${profile || 'default profile'})` };
+    }
+    if (tts === 'vibevoice') {
+      if (!this.vibeVoiceTts?.installed) {
+        throw new Error('VibeVoice not installed — run scripts/vibevoice-install.sh (needs Python 3.10+ and a GPU recommended)');
+      }
+      const res = await this.vibeVoiceTts.speak(text, {
+        voice: opts?.voice || this.configManager.raw.voice.vibevoiceVoice,
+        language: opts?.language || this.configManager.raw.voice.vibevoiceLanguage,
+      });
+      return { wav: res.wav, label: res.voice };
+    }
+    if (tts === 'local') {
+      if (!this.windowsTts?.available) throw new Error('Windows TTS is only available on Windows');
+      const wav = await this.windowsTts.synthesize(text);
+      return { wav, label: 'windows SAPI' };
+    }
+    throw new Error('Meeting TTS is disabled — set meeting.tts to local, vibevoice or voicebox');
+  }
+
+  /** Resolve the cable render device ('auto' or a name/id) to its endpoint id. */
+  private async resolveCableDevice(cable: string): Promise<string> {
+    if (!this.audioRouter?.available) throw new Error('Virtual-cable routing is Windows-only');
+    const render = await this.audioRouter.listDevices('render');
+    if (cable === 'auto') {
+      const found = findCable(render, 'render');
+      if (!found) throw new Error('No virtual audio cable found — install VB-Cable (https://vb-audio.com/Cable) and retry');
+      return found.id;
+    }
+    const match = render.find(
+      d => d.id === cable || d.name.toLowerCase() === cable.toLowerCase() || d.name.toLowerCase().includes(cable.toLowerCase()),
+    );
+    if (!match) {
+      throw new Error(`Audio device "${cable}" not found. Render devices: ${render.map(d => d.name).join(', ') || '(none)'}`);
+    }
+    return match.id;
+  }
+
+  /** Set the default mic to the cable's output side so the call picks up Umbra's speech. */
+  private async routeMeetingMic(): Promise<string> {
+    if (!this.audioRouter?.available) throw new Error('Virtual-cable routing is Windows-only');
+    const output = await this.audioRouter.findCable('capture');
+    if (!output) throw new Error('No virtual cable "CABLE Output" found — install VB-Cable and retry');
+    // Remember the pre-meeting default mic once, so it can be restored on leave
+    // even across back-to-back meetings with routeMic on.
+    if (!this.savedMicDeviceId) {
+      this.savedMicDeviceId = (await this.audioRouter.getDefault('capture')) ?? undefined;
+    }
+    await this.audioRouter.setDefault('capture', output.id);
+    return `Mic routed to ${output.name}`;
+  }
+
+  /** Restore the default mic to whatever it was before routeMeetingMic ran. */
+  private async restoreMeetingMic(): Promise<string | null> {
+    if (!this.savedMicDeviceId || !this.audioRouter?.available) return null;
+    const restored = this.savedMicDeviceId;
+    await this.audioRouter.setDefault('capture', restored);
+    this.savedMicDeviceId = undefined;
+    return restored;
   }
 
   /** Speak on the PC (outside a meeting), optionally with a voice/language. */
@@ -1309,6 +1422,7 @@ export class UmbraOS {
         voice: opts?.voice || v.vibevoiceVoice,
         language: opts?.language || v.vibevoiceLanguage,
       });
+      await this.audioRouter?.play(res.wav);
       return { result: `Spoke (${res.voice})`, voice: res.voice, language: res.language, path: res.path };
     }
     if (provider === 'windows' || provider === 'local') {
@@ -1317,6 +1431,24 @@ export class UmbraOS {
       return { result: 'Spoke (Windows SAPI)' };
     }
     throw new Error(`Unknown TTS provider: ${provider} (use voicebox, vibevoice or windows)`);
+  }
+
+  // ── Audio routing (virtual cable) ───────────────────────────
+
+  async listAudioDevices(): Promise<any> {
+    if (!this.audioRouter) return { available: false, devices: [] };
+    return {
+      available: this.audioRouter.available,
+      devices: await this.audioRouter.listDevices('both').catch(() => []),
+    };
+  }
+
+  async setAudioDefault(opts: { flow?: 'render' | 'capture'; deviceId?: string }): Promise<any> {
+    if (!this.audioRouter) throw new Error('Audio router not available (headless/cloud mode)');
+    const flow: 'render' | 'capture' = opts?.flow === 'capture' ? 'capture' : 'render';
+    if (!opts?.deviceId) throw new Error('deviceId is required');
+    await this.audioRouter.setDefault(flow, opts.deviceId);
+    return { result: `Default ${flow} device set to ${opts.deviceId}` };
   }
 
   /** List the available TTS providers + voices (VibeVoice speakers, Voicebox profiles). */
@@ -1638,6 +1770,13 @@ export class UmbraOS {
     this.shadow?.stop();
     this.awareness?.stopWatching();
     this.meetingCompanion?.stopListening();
+    // If the app shuts down mid-meeting, don't leave the cable selected as the mic.
+    try {
+      const restored = await this.restoreMeetingMic();
+      if (restored) getLogger().info('Meeting mic restored on shutdown');
+    } catch (err: any) {
+      getLogger().warn({ err: err.message }, 'Could not restore the meeting mic on shutdown');
+    }
     this.hotkey?.stop();
     this.p2p?.stop();
     this.pwa?.stop();

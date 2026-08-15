@@ -101,6 +101,8 @@ const DEFAULT_CONFIG: UmbraConfig = {
     chunkSec: 12,
     ordersEnabled: true,
     screenShare: true,
+    audioCable: 'none',
+    routeMic: false,
   },
   awareness: {
     enabled: true,

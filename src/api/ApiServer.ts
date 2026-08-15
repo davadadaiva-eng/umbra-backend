@@ -58,6 +58,8 @@ export interface ApiServerDeps {
   meetingStopShare(): Promise<unknown>;
   meetingOrders(): Promise<unknown>;
   meetingSpeak(text: string, opts?: { voice?: string; language?: string }): Promise<unknown>;
+  listAudioDevices(): Promise<unknown>;
+  setAudioDefault(opts: { flow?: 'render' | 'capture'; deviceId?: string }): Promise<unknown>;
   listDevices(): Promise<unknown>;
   createDeviceInvite(name: string): Promise<unknown>;
   joinDevice(code: string, meta: { name: string; role?: string; capabilities?: string[] }): Promise<unknown>;
@@ -295,6 +297,13 @@ export class ApiServer {
           voice: body.voice !== undefined ? String(body.voice) : undefined,
           language: body.language !== undefined ? String(body.language) : undefined,
         }) };
+      }],
+      [/^GET \/api\/audio\/devices$/, async () => ({ audio: await this.deps.listAudioDevices() })],
+      [/^POST \/api\/audio\/set-default$/, async (_url, body) => {
+        const flow = body.flow === 'capture' ? 'capture' as const : 'render' as const;
+        const deviceId = String(body.deviceId || '');
+        if (!deviceId) throw new Error('deviceId is required');
+        return this.deps.setAudioDefault({ flow, deviceId });
       }],
       [/^GET \/api\/macros$/, async () => ({ macros: await this.deps.getMacros() })],
       [/^GET \/api\/sessions$/, async () => ({ sessions: await this.deps.getSessions() })],
