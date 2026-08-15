@@ -131,6 +131,13 @@ const DEFAULT_CONFIG: UmbraConfig = {
     sttEndpoint: 'https://api.openai.com/v1/audio/transcriptions',
     sttApiKey: '',
     sttModel: 'whisper-1',
+    vibevoiceVoice: 'Carter',
+    vibevoiceLanguage: 'en',
+    vibevoiceModel: 'microsoft/VibeVoice-Realtime-0.5B',
+    vibevoiceDevice: 'auto',
+    voiceboxUrl: 'http://127.0.0.1:17493',
+    voiceboxProfile: '',
+    voiceboxEngine: 'qwen',
   },
   hermes: {
     enabled: true,

@@ -114,4 +114,31 @@ describe('MeetingCompanion', () => {
     await c.shareScreen();
     expect(onExecute).toHaveBeenCalledWith('share_screen', { target: undefined });
   });
+
+  it('speaks a reply when a say order is heard', async () => {
+    const onSpeak = jest.fn().mockResolvedValue('Spoke');
+    const c = make({
+      stt: { transcribe: jest.fn().mockResolvedValue({ text: 'Hey Umbra, say hello to everyone' }) },
+      onSpeak,
+    });
+    await c.join('https://meet.example/abc');
+    await c.feedAudio(Buffer.from('audio'), 'wav');
+    expect(onSpeak).toHaveBeenCalledWith('hello to everyone', undefined);
+    const orders = c.getOrders();
+    expect(orders[0].intent).toBe('say');
+    expect(orders[0].status).toBe('done');
+  });
+
+  it('speak() delegates to onSpeak or falls back to onExecute', async () => {
+    const onSpeak = jest.fn().mockResolvedValue('Spoke');
+    const a = make({ onSpeak });
+    await a.join('https://meet.example/abc');
+    expect(await a.speak('hi')).toBe('Spoke');
+
+    const onExecute = jest.fn().mockResolvedValue('spoke via executor');
+    const b = make({ onExecute });
+    await b.join('https://meet.example/abc');
+    expect(await b.speak('hi')).toBe('spoke via executor');
+    expect(onExecute).toHaveBeenCalledWith('speak', { text: 'hi' });
+  });
 });

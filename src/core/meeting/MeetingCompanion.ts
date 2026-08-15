@@ -58,6 +58,8 @@ export interface MeetingCompanionOptions {
   onNote?: (text: string) => Promise<string>;
   /** Persist a reminder somewhere external (else it is kept in-session). */
   onReminder?: (text: string) => Promise<string>;
+  /** Speak a reply out loud (e.g. Windows SAPI TTS) during the meeting. */
+  onSpeak?: (text: string, opts?: { voice?: string; language?: string }) => Promise<string>;
   /** Seconds of audio captured per chunk. */
   chunkSec?: number;
   /** Detect + auto-execute orders from the transcript (default true). */
@@ -202,6 +204,14 @@ export class MeetingCompanion {
     return result;
   }
 
+  /** Speak a reply out loud (delegates to onSpeak, else onExecute('speak')). */
+  async speak(text: string, opts?: { voice?: string; language?: string }): Promise<string> {
+    if (!this.session) throw new Error('Join a meeting first');
+    if (this.options.onSpeak) return this.options.onSpeak(text, opts);
+    if (this.options.onExecute) return this.options.onExecute('speak', { text, ...opts });
+    throw new Error('No TTS/speaker configured (set meeting.tts to local or vibevoice)');
+  }
+
   /**
    * Detect and execute the orders in one transcript segment. Public so an API
    * or the audio loop can run it explicitly; feedAudio/startListening already
@@ -260,6 +270,8 @@ export class MeetingCompanion {
         return this.runSearch(order.text);
       case 'reminder':
         return this.recordReminder(order.text);
+      case 'say':
+        return this.speak(order.text.replace(/^say\s+/i, ''));
       case 'execute':
       default:
         if (this.options.onExecute) {

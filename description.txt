@@ -200,6 +200,33 @@ WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
     Meet / Zoom / Teams via best-effort DOM automation in the real Chrome.
     API: GET /api/screen/live, POST /api/screen/watch, POST /api/meeting/share,
     POST /api/meeting/stop-share, GET /api/meeting/orders.
+17. Global hotkey + ask overlay + speaking + setup CLI + CI: a poll-based
+    GlobalHotkey (GetAsyncKeyState via NativeCore) fires Ctrl+Shift+Space to
+    open an always-on-top WinForms ask box (CommandHUD) whose questions route
+    to screen awareness / the agent and whose answers are shown in-place.
+    Umbra can now SPEAK in meetings via Windows SAPI TTS (WindowsTts + the
+    "say" order intent + POST /api/meeting/speak) when meeting.tts = local.
+    `npm run setup` (scripts/setup.ts) interactively collects provider/key/
+    models/tier and live-validates the key. GitHub Actions CI runs
+    build+test+lint on Windows and Linux (.github/workflows/ci.yml).
+18. Microsoft VibeVoice voice AI: cloned into external/VibeVoice (git-ignored,
+    sparse/blobless) and driven by src/core/voice/VibeVoiceTts.ts, which runs
+    the Realtime-0.5B streaming TTS model (speaker prompts en/de/fr/it/jp/kr/
+    nl/pl/pt/sp). `npm run vibevoice:install` builds the Python venv. Set
+    meeting.tts = "vibevoice" to make Umbra speak with those voices in
+    meetings; POST /api/voice/speak {text, voice, language} speaks anywhere;
+    GET /api/voice/tts/voices lists the voices. NOTE: Microsoft removed the
+    voice-CLONING (VibeVoice-TTS) code from the repo in Sept 2025, so only
+    the pre-embedded speakers are available — not arbitrary voice cloning.
+    (VibeVoice-ASR with speaker diarization is the natural next wiring.)
+19. Voicebox voice studio (jamiepine/voicebox, cloned into external/voicebox,
+    git-ignored): src/core/voice/VoiceboxClient.ts talks to its REST API
+    (http://127.0.0.1:17493) — /profiles (cloned voices), /speak (play out
+    loud), /generate/stream (WAV bytes), /transcribe (Whisper). Set
+    meeting.tts = "voicebox" or POST /api/voice/speak {provider:"voicebox",
+    voice:"<profile>", language, engine} to speak in a cloned voice; voice
+    cloning + 23 languages + 7 engines come from the Voicebox app itself.
+    GET /api/voice/tts/voices now also lists running Voicebox profiles.
 
 HOW TO CONTINUE (roadmap — what collaborators should pick up)
 ------------------------------------------------------------

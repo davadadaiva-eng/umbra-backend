@@ -11,11 +11,12 @@ describe('detectOrders', () => {
     expect(orders[0].text).toBe('share your screen');
   });
 
-  it('classifies note, search and reminder intents', () => {
+  it('classifies note, search, reminder and say intents', () => {
     expect(classifyOrder('take a note about the deadline')).toBe('note');
     expect(classifyOrder('look up the Q3 numbers')).toBe('search');
     expect(classifyOrder('remind me to book the room')).toBe('reminder');
     expect(classifyOrder('stop sharing')).toBe('stop_share');
+    expect(classifyOrder('say hello to everyone')).toBe('say');
   });
 
   it('defaults an addressed command without a known intent to execute', () => {

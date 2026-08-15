@@ -20,6 +20,7 @@ export type MeetingOrderIntent =
   | 'note'
   | 'search'
   | 'reminder'
+  | 'say'
   | 'execute';
 
 export interface MeetingOrder {
@@ -44,6 +45,7 @@ const STOP_SHARE = /(?:stop|end|finish)\s*(?:sharing|presenting|the\s*share|shar
 const NOTE = /(?:take\s+a\s+note|note\s+down|note\s+this|write\s+down|jot\s+down|remember\s+(?:that|to|this))/i;
 const SEARCH = /(?:search|look\s+up|google|find\s+(?:me|out)|check\s+the\s+web)/i;
 const REMINDER = /(?:remind\s+(?:me|us)|set\s+a\s+reminder)/i;
+const SAY = /^(?:say|tell\s+(?:the\s+meeting|everyone|them)|announce|speak)\b/i;
 
 /** Classify a payload (already stripped of the trigger) into an intent. */
 export function classifyOrder(text: string): MeetingOrderIntent {
@@ -53,6 +55,7 @@ export function classifyOrder(text: string): MeetingOrderIntent {
   if (NOTE.test(t)) return 'note';
   if (SEARCH.test(t)) return 'search';
   if (REMINDER.test(t)) return 'reminder';
+  if (SAY.test(t)) return 'say';
   return 'execute';
 }
 

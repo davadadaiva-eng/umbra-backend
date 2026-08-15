@@ -186,7 +186,8 @@ export interface UmbraConfig {
   meeting: {
     enabled: boolean;
     stt: 'none' | 'local';
-    tts: 'none' | 'local';
+    /** Meeting TTS: 'none' | 'local' (Windows SAPI) | 'vibevoice' | 'voicebox' (voice cloning). */
+    tts: 'none' | 'local' | 'vibevoice' | 'voicebox';
     /** Capture system audio (the call) via WASAPI loopback for live transcription. */
     loopbackEnabled: boolean;
     /** Seconds of meeting audio captured per transcription chunk. */
@@ -240,6 +241,20 @@ export interface UmbraConfig {
     sttApiKey: string;
     /** Whisper model id (e.g. whisper-1, or a whisper.cpp model). */
     sttModel: string;
+    /** Default VibeVoice speaker name or id (e.g. 'Carter' or 'en-Carter_man'). */
+    vibevoiceVoice?: string;
+    /** Default VibeVoice language code (e.g. 'en', 'de', 'fr', 'sp'). */
+    vibevoiceLanguage?: string;
+    /** VibeVoice model id/path (default microsoft/VibeVoice-Realtime-0.5B). */
+    vibevoiceModel?: string;
+    /** VibeVoice inference device: 'auto' | 'cuda' | 'mps' | 'cpu'. */
+    vibevoiceDevice?: 'auto' | 'cuda' | 'mps' | 'cpu';
+    /** Voicebox (jamiepine/voicebox) server URL for cloned-voice TTS. */
+    voiceboxUrl?: string;
+    /** Default Voicebox profile name/id to speak with. */
+    voiceboxProfile?: string;
+    /** Default Voicebox TTS engine (qwen | luxtts | chatterbox | kokoro | tada | ...). */
+    voiceboxEngine?: string;
   };
   hermes: {
     enabled: boolean;

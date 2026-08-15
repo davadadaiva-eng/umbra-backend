@@ -40,6 +40,8 @@ export interface ApiServerDeps {
   generateImage(prompt: string, opts?: { width?: number; height?: number; steps?: number }): Promise<unknown>;
   getVoiceStatus(): Promise<unknown>;
   transcribeAudio(audioBase64: string, opts?: { format?: string; language?: string }): Promise<unknown>;
+  speakText(text: string, opts?: { voice?: string; language?: string; provider?: string; engine?: string }): Promise<unknown>;
+  listTtsVoices(): Promise<unknown>;
   recallMemory(query: string): Promise<unknown>;
   rememberMemory(text: string): Promise<unknown>;
   screenAsk(question: string, intent?: string): Promise<unknown>;
@@ -55,6 +57,7 @@ export interface ApiServerDeps {
   meetingShare(target?: string): Promise<unknown>;
   meetingStopShare(): Promise<unknown>;
   meetingOrders(): Promise<unknown>;
+  meetingSpeak(text: string, opts?: { voice?: string; language?: string }): Promise<unknown>;
   listDevices(): Promise<unknown>;
   createDeviceInvite(name: string): Promise<unknown>;
   joinDevice(code: string, meta: { name: string; role?: string; capabilities?: string[] }): Promise<unknown>;
@@ -285,6 +288,14 @@ export class ApiServer {
       })],
       [/^POST \/api\/meeting\/stop-share$/, async () => ({ result: await this.deps.meetingStopShare() })],
       [/^GET \/api\/meeting\/orders$/, async () => this.deps.meetingOrders()],
+      [/^POST \/api\/meeting\/speak$/, async (_url, body) => {
+        const text = String(body.text || '').trim();
+        if (!text) throw new Error('text is required');
+        return { result: await this.deps.meetingSpeak(text, {
+          voice: body.voice !== undefined ? String(body.voice) : undefined,
+          language: body.language !== undefined ? String(body.language) : undefined,
+        }) };
+      }],
       [/^GET \/api\/macros$/, async () => ({ macros: await this.deps.getMacros() })],
       [/^GET \/api\/sessions$/, async () => ({ sessions: await this.deps.getSessions() })],
       [/^GET \/api\/privacy\/stats$/, async () => this.deps.getPrivacyStats()],
@@ -321,6 +332,17 @@ export class ApiServer {
         };
       }],
       [/^GET \/api\/voice\/status$/, async () => this.deps.getVoiceStatus()],
+      [/^GET \/api\/voice\/tts\/voices$/, async () => this.deps.listTtsVoices()],
+      [/^POST \/api\/voice\/speak$/, async (_url, body) => {
+        const text = String(body.text || '').trim();
+        if (!text) throw new Error('text is required');
+        return this.deps.speakText(text, {
+          voice: body.voice !== undefined ? String(body.voice) : undefined,
+          language: body.language !== undefined ? String(body.language) : undefined,
+          provider: body.provider !== undefined ? String(body.provider) : undefined,
+          engine: body.engine !== undefined ? String(body.engine) : undefined,
+        });
+      }],
       [/^POST \/api\/voice\/transcribe$/, async (_url, body) => {
         const audio = String(body.audio || '');
         if (!audio) throw new Error('audio (base64) is required');

@@ -39,8 +39,12 @@ import { SpeechToText } from './core/voice/SpeechToText';
 import { ScreenAwareness } from './core/awareness/ScreenAwareness';
 import { MeetingCompanion } from './core/meeting/MeetingCompanion';
 import { detectMeetingProvider, meetingShareScript, meetingStopShareScript, ShareTarget } from './core/meeting/MeetingScreenShare';
+import { WindowsTts } from './core/audio/WindowsTts';
+import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
+import { VoiceboxClient } from './core/voice/VoiceboxClient';
 import { LoopbackRecorder } from './core/audio/LoopbackRecorder';
 import { CommandHUD } from './overlay/CommandHUD';
+import { GlobalHotkey } from './overlay/GlobalHotkey';
 import { ApiServer } from './api/ApiServer';
 import { PairingManager } from './p2p/PairingManager';
 import { P2PConnectionManager, P2PConnectionManagerOptions } from './p2p/P2PConnectionManager';
@@ -102,6 +106,7 @@ export class UmbraOS {
   private audio!: NoiseCancellationEngine;
   private streamer?: PreviewStreamer;
   private hud?: CommandHUD;
+  private hotkey?: GlobalHotkey;
   private openmontage!: OpenMontageBridge;
   private videoProducer!: VideoProducer;
   private imageGen!: ImageGenerator;
@@ -127,6 +132,9 @@ export class UmbraOS {
   private meetings!: MeetingAgent;
   private meetingCompanion?: MeetingCompanion;
   private loopbackRecorder?: LoopbackRecorder;
+  private windowsTts?: WindowsTts;
+  private vibeVoiceTts?: VibeVoiceTts;
+  private voiceboxClient?: VoiceboxClient;
   private awareness?: ScreenAwareness;
   private telnyx!: TelnyxClient;
   private dockerDaemon!: DockerDaemon;
@@ -322,6 +330,14 @@ export class UmbraOS {
     this.videoProducer = new VideoProducer(this.llm, this.openmontage);
     this.imageGen = new ImageGenerator(config);
     this.speechToText = new SpeechToText(config);
+    this.vibeVoiceTts = new VibeVoiceTts({
+      repoDir: path.join(__dirname, '..', 'external', 'VibeVoice'),
+      python: path.join(__dirname, '..', 'external', 'VibeVoice', '.venv', process.platform === 'win32' ? 'Scripts' : 'bin', process.platform === 'win32' ? 'python.exe' : 'python'),
+      model: config.voice.vibevoiceModel,
+      device: config.voice.vibevoiceDevice,
+      outputDir: path.join(config.paths.dataDir, 'tts'),
+    });
+    this.voiceboxClient = new VoiceboxClient({ baseUrl: config.voice.voiceboxUrl });
     if (!this.openmontage.isInstalled()) {
       getLogger().warn('OpenMontage not installed — video production disabled (external/OpenMontage)');
     }
@@ -405,6 +421,15 @@ export class UmbraOS {
         knowledge: this.knowledge,
         screenAsk: (q, intent) => this.screenAsk(q, intent),
       });
+
+      // Global hotkey (Ctrl+Shift+Space) toggles the ask overlay. The
+      // listener polls GetAsyncKeyState through the NativeCore daemon and
+      // emits overlay:toggle, which the HUD handles.
+      const hudHotkey = config.hotkeys.pause || 'Ctrl+Shift+Space';
+      if (hudHotkey) {
+        this.hotkey = new GlobalHotkey({ combo: hudHotkey, pollMs: 200 });
+        this.hotkey.start();
+      }
     }
 
     // ── API Server (REST + WS for the read-only UI) ──────────
@@ -442,6 +467,8 @@ export class UmbraOS {
       generateImage: (prompt, opts) => this.generateImage(prompt, opts),
       getVoiceStatus: () => this.getVoiceStatus(),
       transcribeAudio: (audio, opts) => this.transcribeAudio(audio, opts),
+      speakText: (text, opts) => this.speakOut(text, opts),
+      listTtsVoices: () => this.listTtsVoices(),
       recallMemory: q => this.recallMemory(q),
       rememberMemory: text => this.rememberMemory(text),
       screenAsk: (question, intent) => this.screenAsk(question, intent),
@@ -457,6 +484,7 @@ export class UmbraOS {
       meetingShare: target => this.meetingShare(target),
       meetingStopShare: () => this.meetingStopShare(),
       meetingOrders: () => this.meetingOrders(),
+      meetingSpeak: (text, opts) => this.meetingSpeak(text, opts),
       listDevices: () => this.getDevices(),
       createDeviceInvite: name => this.createDeviceInvite(name),
       joinDevice: (code, meta) => this.joinDevice(code, meta),
@@ -625,6 +653,7 @@ export class UmbraOS {
     // ── Meeting Companion (join/hear/act/leave) — desktop only ──
     if (!this.headless) {
       this.loopbackRecorder = new LoopbackRecorder({ dataDir: config.paths.dataDir });
+      this.windowsTts = new WindowsTts(config.paths.dataDir);
       this.meetingCompanion = new MeetingCompanion({
         stt: this.speechToText.available
           ? {
@@ -645,6 +674,7 @@ export class UmbraOS {
         onSearch: query => this.searchForMeeting(query),
         onNote: text => this.noteForMeeting(text),
         onReminder: text => this.reminderForMeeting(text),
+        onSpeak: (text, opts) => this.speakForMeeting(text, opts),
         summarize: async (transcript: string) => {
           const res = await this.llm.complete(
             [{ role: 'user', content: `Summarize this meeting in at most 300 tokens:\n\n${transcript}` }],
@@ -1218,6 +1248,103 @@ export class UmbraOS {
     return { orders: this.meetingCompanion?.getOrders() ?? [] };
   }
 
+  async meetingSpeak(text: string, opts?: { voice?: string; language?: string }): Promise<any> {
+    if (!this.meetingCompanion) throw new Error('Meeting companion not available (headless/cloud mode)');
+    return { result: await this.meetingCompanion.speak(text, opts) };
+  }
+
+  /** Speak in a meeting using the configured TTS provider (meeting.tts). */
+  private async speakForMeeting(text: string, opts?: { voice?: string; language?: string }): Promise<string> {
+    const tts = this.configManager.raw.meeting.tts;
+    if (tts === 'voicebox') {
+      if (!this.voiceboxClient || !(await this.voiceboxClient.isRunning())) {
+        throw new Error('Voicebox is not running — start the Voicebox app (http://127.0.0.1:17493)');
+      }
+      const voice = this.configManager.raw.voice;
+      await this.voiceboxClient.speak(text, {
+        profile: opts?.voice || voice.voiceboxProfile || undefined,
+        language: opts?.language,
+        engine: voice.voiceboxEngine,
+      });
+      return 'Spoke (voicebox)'; 
+    }
+    if (tts === 'vibevoice') {
+      if (!this.vibeVoiceTts?.installed) {
+        throw new Error('VibeVoice not installed — run scripts/vibevoice-install.sh (needs Python 3.10+ and a GPU recommended)');
+      }
+      const res = await this.vibeVoiceTts.speak(text, {
+        voice: opts?.voice || this.configManager.raw.voice.vibevoiceVoice,
+        language: opts?.language || this.configManager.raw.voice.vibevoiceLanguage,
+      });
+      return `Spoke (${res.voice})`;
+    }
+    if (tts === 'local') {
+      if (!this.windowsTts?.available) throw new Error('Windows TTS is only available on Windows');
+      await this.windowsTts.speak(text);
+      return 'Spoke';
+    }
+    throw new Error('Meeting TTS is disabled — set meeting.tts to local or vibevoice');
+  }
+
+  /** Speak on the PC (outside a meeting), optionally with a voice/language. */
+  async speakOut(text: string, opts?: { voice?: string; language?: string; provider?: string; engine?: string }): Promise<any> {
+    const v = this.configManager.raw.voice;
+    const provider = opts?.provider ?? (this.vibeVoiceTts?.installed ? 'vibevoice' : 'windows');
+    if (provider === 'voicebox') {
+      if (!this.voiceboxClient || !(await this.voiceboxClient.isRunning())) {
+        throw new Error('Voicebox is not running — start the Voicebox app (http://127.0.0.1:17493)');
+      }
+      await this.voiceboxClient.speak(text, {
+        profile: opts?.voice || v.voiceboxProfile || undefined,
+        language: opts?.language,
+        engine: opts?.engine || v.voiceboxEngine,
+      });
+      return { result: 'Spoke (voicebox)', voice: opts?.voice || v.voiceboxProfile };
+    }
+    if (provider === 'vibevoice') {
+      if (!this.vibeVoiceTts?.installed) {
+        throw new Error('VibeVoice not installed — run scripts/vibevoice-install.sh');
+      }
+      const res = await this.vibeVoiceTts.speak(text, {
+        voice: opts?.voice || v.vibevoiceVoice,
+        language: opts?.language || v.vibevoiceLanguage,
+      });
+      return { result: `Spoke (${res.voice})`, voice: res.voice, language: res.language, path: res.path };
+    }
+    if (provider === 'windows' || provider === 'local') {
+      if (!this.windowsTts?.available) throw new Error('Windows TTS is only available on Windows');
+      await this.windowsTts.speak(text);
+      return { result: 'Spoke (Windows SAPI)' };
+    }
+    throw new Error(`Unknown TTS provider: ${provider} (use voicebox, vibevoice or windows)`);
+  }
+
+  /** List the available TTS providers + voices (VibeVoice speakers, Voicebox profiles). */
+  async listTtsVoices(): Promise<any> {
+    let voiceboxRunning = false;
+    let voiceboxProfiles: any[] = [];
+    if (this.voiceboxClient) {
+      voiceboxRunning = await this.voiceboxClient.isRunning().catch(() => false);
+      voiceboxProfiles = voiceboxRunning ? await this.voiceboxClient.listProfiles().catch(() => []) : [];
+    }
+    return {
+      windows: this.windowsTts?.available ?? false,
+      vibevoice: {
+        installed: this.vibeVoiceTts?.installed ?? false,
+        model: this.configManager.raw.voice.vibevoiceModel,
+        defaultVoice: this.configManager.raw.voice.vibevoiceVoice,
+        defaultLanguage: this.configManager.raw.voice.vibevoiceLanguage,
+        voices: this.vibeVoiceTts?.listVoices() ?? [],
+      },
+      voicebox: {
+        running: voiceboxRunning,
+        url: this.configManager.raw.voice.voiceboxUrl,
+        defaultProfile: this.configManager.raw.voice.voiceboxProfile,
+        profiles: voiceboxProfiles,
+      },
+    };
+  }
+
   // ── Meeting screen-share + order helpers (best-effort DOM automation) ──
 
   private async shareScreenInMeeting(target?: string): Promise<string> {
@@ -1511,6 +1638,7 @@ export class UmbraOS {
     this.shadow?.stop();
     this.awareness?.stopWatching();
     this.meetingCompanion?.stopListening();
+    this.hotkey?.stop();
     this.p2p?.stop();
     this.pwa?.stop();
     this.deviceClient?.stop();
@@ -1568,6 +1696,9 @@ export class UmbraOS {
       awareness: this.awareness,
       meetings: this.meetings,
       meetingCompanion: this.meetingCompanion,
+      windowsTts: this.windowsTts,
+      vibeVoiceTts: this.vibeVoiceTts,
+      voiceboxClient: this.voiceboxClient,
       telnyx: this.telnyx,
       dockerDaemon: this.dockerDaemon,
       metering: this.metering,
