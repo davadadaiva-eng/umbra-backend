@@ -232,7 +232,7 @@ WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
     plays a synthesized WAV on a chosen device by temporarily switching the
     default render endpoint, then restoring it. Set meeting.audioCable =
     "auto" (or a device name) so meeting replies (voicebox/vibevoice/SAPI)
-    are synthesized to WAV and played into the cable's    "CABLE Input", and set
+    are synthesized to WAV and played into the cable's "CABLE Input", and set
     the call's mic to "CABLE Output" (or meeting.routeMic = true to auto-set
     the default mic on join) so participants actually HEAR Umbra instead of
     just the local speakers. The pre-meeting default mic is remembered and
@@ -240,6 +240,15 @@ WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
     app shutdown), so routeMic never leaves the cable selected. GET
     /api/audio/devices lists endpoints;
     POST /api/audio/set-default {flow, deviceId} switches the default device.
+21. Meeting speaker diarization via VibeVoice-ASR: scripts/vibevoice-asr-server.py
+    runs a local FastAPI server (`npm run vibevoice:asr-server`) that loads
+    microsoft/VibeVoice-ASR (who/when/what) once and serves POST /transcribe.
+    src/core/voice/VibeVoiceAsr.ts talks to it; set voice.asrProvider =
+    "vibevoice" (+ optional voice.vibevoiceAsrContext hotwords like speaker
+    names/jargon) and the MeetingCompanion transcribes each audio chunk into
+    speaker-labeled, timestamped TranscriptSegments instead of a generic
+    "meeting" speaker — so summaries/orders say who said what. Voice status
+    (GET /api/voice/status) now reports the ASR server state.
 
 HOW TO CONTINUE (roadmap — what collaborators should pick up)
 ------------------------------------------------------------

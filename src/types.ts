@@ -263,6 +263,17 @@ export interface UmbraConfig {
     voiceboxProfile?: string;
     /** Default Voicebox TTS engine (qwen | luxtts | chatterbox | kokoro | tada | ...). */
     voiceboxEngine?: string;
+    /**
+     * Meeting diarization: 'none' | 'vibevoice' (microsoft/VibeVoice-ASR —
+     * who/when/what speaker labels). Runs against scripts/vibevoice-asr-server.
+     */
+    asrProvider?: 'none' | 'vibevoice';
+    /** VibeVoice-ASR diarization server URL. */
+    vibevoiceAsrUrl?: string;
+    /** VibeVoice-ASR model id/path (default microsoft/VibeVoice-ASR). */
+    vibevoiceAsrModel?: string;
+    /** Freeform context/hotwords for diarization (speaker names, jargon, topics). */
+    vibevoiceAsrContext?: string;
   };
   hermes: {
     enabled: boolean;

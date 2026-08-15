@@ -38,6 +38,9 @@ export interface TranscriptSegment {
   speaker: string;
   text: string;
   atMs: number;
+  /** Diarized offset within the source audio chunk (ms), when available. */
+  startMs?: number;
+  endMs?: number;
 }
 
 export interface MeetingAgentOptions {

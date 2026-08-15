@@ -10,7 +10,8 @@
     "test": "jest --config jest.config.js",
     "lint": "oxlint src/",
     "setup": "ts-node scripts/setup.ts",
-    "vibevoice:install": "bash scripts/vibevoice-install.sh"
+    "vibevoice:install": "bash scripts/vibevoice-install.sh",
+    "vibevoice:asr-server": "bash scripts/vibevoice-asr-server.sh"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

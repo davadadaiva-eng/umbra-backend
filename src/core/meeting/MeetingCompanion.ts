@@ -21,6 +21,14 @@ import { getLogger } from '../Logger';
 
 export type MeetingStatus = 'joining' | 'joined' | 'listening' | 'left';
 
+/** A speaker-labeled, timestamped transcript piece (VibeVoice-ASR diarization). */
+export interface DiarizedSegment {
+  speaker: string;
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
 export interface MeetingSessionState {
   id: string;
   url: string;
@@ -42,6 +50,11 @@ export type OrderDetector = (segment: TranscriptSegment, context: TranscriptSegm
 export interface MeetingCompanionOptions {
   /** Transcribes an audio buffer to text (SpeechToText-compatible shape). */
   stt?: { transcribe(audio: Buffer, format?: string): Promise<{ text: string }> };
+  /**
+   * Transcribes an audio buffer into speaker-labeled segments (VibeVoice-ASR
+   * diarization). When set, this is used instead of `stt` for live capture.
+   */
+  diarize?: { transcribe(audio: Buffer, format?: string): Promise<DiarizedSegment[]> };
   recorder?: LoopbackRecorder;
   /** Opens the meeting in the real browser (e.g. RealDesktop2.openChrome). */
   onJoin?: (url: string) => Promise<string>;
@@ -135,8 +148,11 @@ export class MeetingCompanion {
   /** Begin capturing meeting audio → transcript chunks (and execute orders). */
   startListening(): void {
     if (!this.session) throw new Error('Join a meeting first');
-    if (!this.options.recorder || !this.options.stt) {
-      throw new Error('Listening needs a loopback recorder + STT engine (set voice.enabled and a sttProvider)');
+    if (!this.options.recorder) {
+      throw new Error('Listening needs a loopback recorder (set meeting.loopbackEnabled)');
+    }
+    if (!this.options.stt && !this.options.diarize) {
+      throw new Error('Listening needs an STT engine or diarizer (set voice.enabled + sttProvider, or voice.asrProvider=vibevoice)');
     }
     if (this.listening) return;
     this.listening = true;
@@ -160,6 +176,12 @@ export class MeetingCompanion {
   /** Push externally-captured audio into the transcript (any source). */
   async feedAudio(audio: Buffer, format: string = 'wav'): Promise<TranscriptSegment> {
     if (!this.session) throw new Error('Join a meeting first');
+    if (this.options.diarize) {
+      const segments = await this.options.diarize.transcribe(audio, format);
+      const added = await this.ingestDiarized(segments, Date.now());
+      if (!added.length) throw new Error('No speech detected in the audio');
+      return added[added.length - 1];
+    }
     if (!this.options.stt) throw new Error('No STT engine configured');
     const { text } = await this.options.stt.transcribe(audio, format);
     return this.ingest(text);
@@ -305,10 +327,16 @@ export class MeetingCompanion {
   private async loopOnce(): Promise<void> {
     if (!this.listening || !this.session) return;
     const chunkSec = this.options.chunkSec ?? 12;
+    const chunkStartedAt = Date.now();
     try {
       const audio = await this.options.recorder!.record(chunkSec);
-      const { text } = await this.options.stt!.transcribe(audio, 'wav');
-      if (text && text.trim()) await this.ingest(text);
+      if (this.options.diarize) {
+        const segments = await this.options.diarize.transcribe(audio, 'wav');
+        if (segments.length) await this.ingestDiarized(segments, chunkStartedAt);
+      } else {
+        const { text } = await this.options.stt!.transcribe(audio, 'wav');
+        if (text && text.trim()) await this.ingest(text);
+      }
     } catch (err: any) {
       if (this.session) this.session.lastError = err.message;
       getLogger().warn({ err: err.message }, 'Meeting listen chunk failed');
@@ -319,6 +347,31 @@ export class MeetingCompanion {
   private async ingest(text: string): Promise<TranscriptSegment> {
     const segment = this.appendSegment(text);
     await this.processOrders(segment);
+    return segment;
+  }
+
+  /** Append speaker-labeled diarized segments and run order detection on each. */
+  private async ingestDiarized(segments: DiarizedSegment[], chunkStartedAt: number): Promise<TranscriptSegment[]> {
+    const added: TranscriptSegment[] = [];
+    for (const seg of segments) {
+      const segment = this.appendDiarizedSegment(seg, chunkStartedAt);
+      added.push(segment);
+      await this.processOrders(segment);
+    }
+    return added;
+  }
+
+  private appendDiarizedSegment(seg: DiarizedSegment, chunkStartedAt: number): TranscriptSegment {
+    const atMs = Math.max(0, chunkStartedAt - this.session!.joinedAt) + seg.startMs;
+    const segment: TranscriptSegment = {
+      speaker: seg.speaker,
+      text: seg.text.trim(),
+      atMs,
+      startMs: seg.startMs,
+      endMs: seg.endMs,
+    };
+    this.session!.transcript.push(segment);
+    eventBus.emit('meeting:transcript', { speaker: segment.speaker, text: segment.text, atMs: segment.atMs });
     return segment;
   }
 

@@ -42,6 +42,7 @@ import { detectMeetingProvider, meetingShareScript, meetingStopShareScript, Shar
 import { WindowsTts } from './core/audio/WindowsTts';
 import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
 import { VoiceboxClient } from './core/voice/VoiceboxClient';
+import { VibeVoiceAsr } from './core/voice/VibeVoiceAsr';
 import { LoopbackRecorder } from './core/audio/LoopbackRecorder';
 import { AudioRouter, findCable } from './core/audio/AudioRouter';
 import { CommandHUD } from './overlay/CommandHUD';
@@ -139,6 +140,7 @@ export class UmbraOS {
   private windowsTts?: WindowsTts;
   private vibeVoiceTts?: VibeVoiceTts;
   private voiceboxClient?: VoiceboxClient;
+  private vibeVoiceAsr?: VibeVoiceAsr;
   private awareness?: ScreenAwareness;
   private telnyx!: TelnyxClient;
   private dockerDaemon!: DockerDaemon;
@@ -342,6 +344,7 @@ export class UmbraOS {
       outputDir: path.join(config.paths.dataDir, 'tts'),
     });
     this.voiceboxClient = new VoiceboxClient({ baseUrl: config.voice.voiceboxUrl });
+    this.vibeVoiceAsr = new VibeVoiceAsr({ baseUrl: config.voice.vibevoiceAsrUrl });
     if (!this.openmontage.isInstalled()) {
       getLogger().warn('OpenMontage not installed — video production disabled (external/OpenMontage)');
     }
@@ -667,6 +670,18 @@ export class UmbraOS {
               transcribe: async (audio: Buffer, format?: string) => {
                 const r = await this.speechToText!.transcribe({ audio, format: format as 'wav' | 'mp3' | 'webm' });
                 return { text: r.text };
+              },
+            }
+          : undefined,
+        diarize: config.voice.asrProvider === 'vibevoice'
+          ? {
+              transcribe: async (audio: Buffer, _format?: string) => {
+                if (!this.vibeVoiceAsr || !(await this.vibeVoiceAsr.isRunning())) {
+                  throw new Error('VibeVoice-ASR server not running — start it with `npm run vibevoice:asr-server`');
+                }
+                return this.vibeVoiceAsr.transcribe(audio, {
+                  context: this.configManager.raw.voice.vibevoiceAsrContext || undefined,
+                });
               },
             }
           : undefined,
@@ -1142,6 +1157,12 @@ export class UmbraOS {
       enabled: this.speechToText?.available ?? false,
       provider: this.speechToText?.provider ?? 'none',
       model: this.configManager.raw.voice.sttModel,
+      asr: {
+        provider: this.configManager.raw.voice.asrProvider ?? 'none',
+        url: this.configManager.raw.voice.vibevoiceAsrUrl,
+        model: this.configManager.raw.voice.vibevoiceAsrModel,
+        running: this.vibeVoiceAsr ? await this.vibeVoiceAsr.isRunning().catch(() => false) : false,
+      },
     };
   }
 

@@ -141,4 +141,59 @@ describe('MeetingCompanion', () => {
     expect(await b.speak('hi')).toBe('spoke via executor');
     expect(onExecute).toHaveBeenCalledWith('speak', { text: 'hi' });
   });
+
+  it('ingests diarized segments with per-speaker labels and timestamps', async () => {
+    const diarize = {
+      transcribe: jest.fn().mockResolvedValue([
+        { speaker: 'SPEAKER_00', text: 'Hello everyone', startMs: 0, endMs: 1000 },
+        { speaker: 'SPEAKER_01', text: 'Good morning', startMs: 1200, endMs: 2000 },
+      ]),
+    };
+    const c = make({ diarize, stt: undefined });
+    await c.join('https://meet.example/abc');
+    const seg = await c.feedAudio(Buffer.from('audio'), 'wav');
+    const transcript = c.status()!.transcript;
+    expect(transcript).toHaveLength(2);
+    expect(transcript[0].speaker).toBe('SPEAKER_00');
+    expect(transcript[1].speaker).toBe('SPEAKER_01');
+    expect(transcript[1].startMs).toBe(1200);
+    expect(transcript[1].endMs).toBe(2000);
+    expect(seg.speaker).toBe('SPEAKER_01'); // feedAudio returns the last appended segment
+  });
+
+  it('executes orders heard in diarized segments', async () => {
+    const onShareScreen = jest.fn().mockResolvedValue('sharing now');
+    const diarize = {
+      transcribe: jest.fn().mockResolvedValue([
+        { speaker: 'SPEAKER_00', text: 'Hey Umbra, share your screen', startMs: 0, endMs: 1500 },
+      ]),
+    };
+    const c = make({ diarize, stt: undefined, onShareScreen });
+    await c.join('https://meet.example/abc');
+    await c.feedAudio(Buffer.from('audio'), 'wav');
+    expect(onShareScreen).toHaveBeenCalled();
+    expect(c.getOrders()[0].intent).toBe('share_screen');
+  });
+
+  it('startListening accepts a diarizer in place of STT', async () => {
+    jest.useFakeTimers();
+    try {
+      const c = make({
+        stt: undefined,
+        diarize: { transcribe: jest.fn().mockResolvedValue([]) },
+      });
+      await c.join('https://meet.example/abc');
+      expect(() => c.startListening()).not.toThrow();
+      c.stopListening();
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  it('still requires a recorder even with a diarizer', async () => {
+    const c = make({ stt: undefined, recorder: undefined, diarize: { transcribe: jest.fn() } });
+    await c.join('https://meet.example/abc');
+    expect(() => c.startListening()).toThrow(/loopback recorder/);
+  });
 });

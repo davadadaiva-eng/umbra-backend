@@ -140,6 +140,10 @@ const DEFAULT_CONFIG: UmbraConfig = {
     voiceboxUrl: 'http://127.0.0.1:17493',
     voiceboxProfile: '',
     voiceboxEngine: 'qwen',
+    asrProvider: 'none',
+    vibevoiceAsrUrl: 'http://127.0.0.1:17500',
+    vibevoiceAsrModel: 'microsoft/VibeVoice-ASR',
+    vibevoiceAsrContext: '',
   },
   hermes: {
     enabled: true,
