@@ -51,6 +51,7 @@ import { WindowsTts } from './core/audio/WindowsTts';
 import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
 import { VoiceboxClient } from './core/voice/VoiceboxClient';
 import { VibeVoiceAsr } from './core/voice/VibeVoiceAsr';
+import { VoiceStackHealth } from './core/voice/VoiceStackHealth';
 import { LoopbackRecorder } from './core/audio/LoopbackRecorder';
 import { AudioRouter, findCable } from './core/audio/AudioRouter';
 import { CommandHUD } from './overlay/CommandHUD';
@@ -151,6 +152,7 @@ export class UmbraOS {
   private vibeVoiceTts?: VibeVoiceTts;
   private voiceboxClient?: VoiceboxClient;
   private vibeVoiceAsr?: VibeVoiceAsr;
+  private voiceStackHealth?: VoiceStackHealth;
   private awareness?: ScreenAwareness;
   private telnyx!: TelnyxClient;
   private dockerDaemon!: DockerDaemon;
@@ -485,6 +487,7 @@ export class UmbraOS {
       listOpenMontageTools: () => this.listOpenMontageTools(),
       generateImage: (prompt, opts) => this.generateImage(prompt, opts),
       getVoiceStatus: () => this.getVoiceStatus(),
+      getVoiceStackHealth: refresh => this.getVoiceStackHealth(refresh),
       transcribeAudio: (audio, opts) => this.transcribeAudio(audio, opts),
       voiceCommand: (audio, opts) => this.voiceCommand(audio, opts),
       speakText: (text, opts) => this.speakOut(text, opts),
@@ -746,6 +749,95 @@ export class UmbraOS {
         chunkSec: config.meeting.chunkSec,
         ordersEnabled: config.meeting.ordersEnabled !== false,
       });
+
+      // ── Voice-stack health: validate STT / TTS / ASR / cable / loopback
+      //    at boot (and on demand via GET /api/voice/health). Reported in
+      //    /api/status under `voiceStack`. Never fails boot. ──
+      this.voiceStackHealth = new VoiceStackHealth({
+        config: {
+          sttProvider: config.voice.sttProvider ?? 'none',
+          tts: config.meeting.tts ?? 'none',
+          asrProvider: config.voice.asrProvider ?? 'none',
+          audioCable: config.meeting.audioCable ?? 'none',
+          loopbackEnabled: config.meeting.loopbackEnabled === true,
+        },
+        probes: {
+          stt: async () => {
+            const provider = config.voice.sttProvider ?? 'none';
+            if (provider === 'openai') {
+              const hasKey = !!(config.openai?.apiKey || config.voice.sttApiKey);
+              return hasKey
+                ? { ok: true, detail: 'OpenAI Whisper: API key configured' }
+                : { ok: false, error: 'OpenAI Whisper selected but no API key configured (openai.apiKey or voice.sttApiKey)' };
+            }
+            if (provider === 'whisper-local') {
+              if (!this.speechToText?.available) return { ok: false, error: 'whisper-local selected but SpeechToText is not available' };
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 3000);
+              try {
+                const endpoint = config.voice.sttEndpoint || 'http://localhost:8080';
+                const res = await fetch(endpoint, { method: 'GET', signal: controller.signal });
+                return { ok: true, detail: `whisper-local reachable at ${endpoint} (HTTP ${res.status})` };
+              } catch (err: any) {
+                return { ok: false, error: `whisper-local server unreachable: ${err.message}` };
+              } finally {
+                clearTimeout(timer);
+              }
+            }
+            return { ok: false, error: `Unknown STT provider: ${provider}` };
+          },
+          tts: async () => {
+            const tts = config.meeting.tts ?? 'none';
+            if (tts === 'local') {
+              return this.windowsTts?.available
+                ? { ok: true, detail: 'Windows SAPI TTS available' }
+                : { ok: false, error: 'Windows SAPI TTS unavailable (Windows only)' };
+            }
+            if (tts === 'vibevoice') {
+              return this.vibeVoiceTts?.installed
+                ? { ok: true, detail: 'VibeVoice venv installed (npm run vibevoice:install)' }
+                : { ok: false, error: 'VibeVoice not installed — run `npm run vibevoice:install`' };
+            }
+            if (tts === 'voicebox') {
+              const running = this.voiceboxClient ? await this.voiceboxClient.isRunning().catch(() => false) : false;
+              return running
+                ? { ok: true, detail: 'Voicebox API running at ' + (config.voice.voiceboxUrl || 'http://127.0.0.1:17493') }
+                : { ok: false, error: 'Voicebox not running — start it (docs/voicebox-setup.md)' };
+            }
+            return { ok: false, error: `Unknown TTS provider: ${tts}` };
+          },
+          asr: async () => {
+            const running = this.vibeVoiceAsr ? await this.vibeVoiceAsr.isRunning().catch(() => false) : false;
+            return running
+              ? { ok: true, detail: 'VibeVoice-ASR server running (npm run vibevoice:asr-server)' }
+              : { ok: false, error: 'VibeVoice-ASR not running — start `npm run vibevoice:asr-server`' };
+          },
+          cable: async () => {
+            const cable = config.meeting.audioCable ?? 'none';
+            if (!this.audioRouter) return { ok: false, error: 'Audio router unavailable' };
+            const devices = await this.audioRouter.listDevices('both').catch(() => []);
+            if (cable === 'auto') {
+              const found = findCable(devices, 'render');
+              if (!found) return { ok: false, error: 'No virtual audio cable detected — install VB-Cable (vb-audio.com/Cable)' };
+              return {
+                ok: true,
+                detail: `VB-Cable found (${found.name}); default mic ${config.meeting.routeMic ? 'will route to the cable on join' : 'unchanged'}`,
+              };
+            }
+            const match = devices.find(d => d.id === cable || d.name === cable);
+            return match
+              ? { ok: true, detail: `Cable device present: ${match.name}` }
+              : { ok: false, error: `Configured cable device not found: ${cable}` };
+          },
+          loopback: async () => {
+            return this.loopbackRecorder?.available
+              ? { ok: true, detail: 'WASAPI loopback capture available' }
+              : { ok: false, error: 'Loopback capture unavailable (WASAPI disabled or blocked — try VB-Cable/Stereo Mix)' };
+          },
+        },
+      });
+      // Run once at boot (never blocks startup on failure).
+      this.voiceStackHealth.refresh().catch(() => getLogger().debug('Voice-stack health check failed'));
     }
 
     // ── Start subsystems ─────────────────────────────────────
@@ -877,6 +969,7 @@ export class UmbraOS {
         plan: this.configManager.raw.plan.tier,
       },
       devices: this.deviceHub ? this.deviceHub.getStatus() : null,
+      voiceStack: this.voiceStackHealth ? this.voiceStackHealth.snapshot() : null,
     };
   }
 
@@ -1257,7 +1350,17 @@ export class UmbraOS {
         model: this.configManager.raw.voice.vibevoiceAsrModel,
         running: this.vibeVoiceAsr ? await this.vibeVoiceAsr.isRunning().catch(() => false) : false,
       },
+      health: this.voiceStackHealth ? this.voiceStackHealth.snapshot() : null,
     };
+  }
+
+  /** Voice-stack health: cached report, or re-run every probe when refresh. */
+  async getVoiceStackHealth(refresh = false): Promise<any> {
+    if (!this.voiceStackHealth) {
+      return { ok: false, checkedAt: Date.now(), reason: 'voice stack not configured (headless/cloud mode)', components: [] };
+    }
+    if (refresh) await this.voiceStackHealth.refresh();
+    return this.voiceStackHealth.snapshot();
   }
 
   async transcribeAudio(audioBase64: string, opts?: { format?: string; language?: string }): Promise<any> {

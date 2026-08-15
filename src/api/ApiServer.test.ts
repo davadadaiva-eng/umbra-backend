@@ -58,6 +58,18 @@ function makeDeps() {
     delegateHermes: async (description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }) => ({ description, ...opts }),
     generateJournalNow: async () => ({ ok: true }),
     voiceCommand: async (audio: string, opts?: { target?: string }) => ({ text: 'remind me to ship', dispatch: { taskId: 'task-7', target: opts?.target ?? 'desktop' } }),
+    getVoiceStackHealth: async (refresh?: boolean) => ({
+      ok: true,
+      checkedAt: 123,
+      components: [
+        { component: 'stt', configured: true, ok: true, status: 'ok' },
+        { component: 'tts', configured: true, ok: true, status: 'ok' },
+        { component: 'asr', configured: true, ok: true, status: 'ok' },
+        { component: 'cable', configured: true, ok: true, status: 'ok' },
+        { component: 'loopback', configured: true, ok: true, status: 'ok' },
+      ],
+      refreshed: refresh === true,
+    }),
     meetingMute: async (muted: boolean) => `mic ${muted ? 'muted' : 'unmuted'}`,
     meetingRaiseHand: async (raised: boolean) => `hand ${raised ? 'raised' : 'lowered'}`,
     meetingChat: async (message: string) => `sent: ${message}`,
@@ -448,5 +460,18 @@ describe('ApiServer', () => {
     expect(res.json.plan).toBe('pro');
     expect(res.json.budget.remainingUsd).toBe(4.5);
     expect(res.json.metering.tokensLimit).toBe(10000000);
+  });
+
+  test('voice health returns the cached stack report', async () => {
+    const res = await api('/api/voice/health');
+    expect(res.status).toBe(200);
+    expect(res.json.ok).toBe(true);
+    expect(res.json.components).toHaveLength(5);
+  });
+
+  test('voice health refresh re-runs the probes', async () => {
+    const res = await api('/api/voice/health?refresh=1');
+    expect(res.status).toBe(200);
+    expect(res.json.refreshed).toBe(true);
   });
 });

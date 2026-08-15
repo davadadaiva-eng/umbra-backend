@@ -41,6 +41,8 @@ export interface ApiServerDeps {
   listOpenMontageTools(): Promise<unknown>;
   generateImage(prompt: string, opts?: { width?: number; height?: number; steps?: number }): Promise<unknown>;
   getVoiceStatus(): Promise<unknown>;
+  /** Voice-stack health (STT/TTS/ASR/cable/loopback); refresh re-runs the probes. */
+  getVoiceStackHealth(refresh?: boolean): Promise<unknown>;
   transcribeAudio(audioBase64: string, opts?: { format?: string; language?: string }): Promise<unknown>;
   /** Voice command → task: transcribe the audio and submit it as a task. */
   voiceCommand(audioBase64: string, opts?: { format?: string; language?: string; target?: string }): Promise<unknown>;
@@ -381,6 +383,7 @@ export class ApiServer {
         };
       }],
       [/^GET \/api\/voice\/status$/, async () => this.deps.getVoiceStatus()],
+      [/^GET \/api\/voice\/health$/, async url => this.deps.getVoiceStackHealth(url.searchParams.get('refresh') === '1')],
       [/^GET \/api\/voice\/tts\/voices$/, async () => this.deps.listTtsVoices()],
       [/^POST \/api\/voice\/speak$/, async (_url, body) => {
         const text = String(body.text || '').trim();
