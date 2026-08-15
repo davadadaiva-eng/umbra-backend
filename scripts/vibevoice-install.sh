@@ -19,9 +19,36 @@ fi
 
 cd "$REPO_DIR"
 
+# VibeVoice needs Python 3.10+. Prefer the launcher (py -3.12/3.11/3.10), then
+# whatever `python3` resolves to; reject anything older than 3.10 with a hint.
+PYTHON_BIN="${PYTHON:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  for ver in 3.14 3.13 3.12 3.11 3.10; do
+    if command -v "py" >/dev/null 2>&1 && py -"$ver" -c 'import sys' >/dev/null 2>&1; then
+      PYTHON_BIN="py -$ver"
+      break
+    fi
+    if command -v "python$ver" >/dev/null 2>&1; then
+      PYTHON_BIN="python$ver"
+      break
+    fi
+  done
+  if [ -z "$PYTHON_BIN" ]; then
+    PYTHON_BIN="python"
+  fi
+  # shellcheck disable=SC2086
+  if ! $PYTHON_BIN -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    echo "[ERROR] VibeVoice needs Python 3.10+. Found a too-old default python."
+    echo "        Install Python 3.10+ (https://www.python.org/downloads/) and re-run, or"
+    echo "        set PYTHON to a modern interpreter, e.g.: PYTHON='py -3.12' npm run vibevoice:install"
+    exit 1
+  fi
+fi
+
 if [ ! -d .venv ]; then
-  echo "[INFO] Creating Python venv..."
-  python -m venv .venv
+  echo "[INFO] Creating Python venv with: $PYTHON_BIN"
+  # shellcheck disable=SC2086
+  $PYTHON_BIN -m venv .venv
 fi
 
 if [ -f .venv/Scripts/activate ]; then
