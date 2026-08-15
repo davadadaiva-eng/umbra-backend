@@ -37,30 +37,30 @@ describe('MCP Registry + Router', () => {
     expect(result.output).toBe(42);
   });
 
-  it('dispatches hermes-agent through a native handler and surfaces failures', async () => {
+  it('dispatches native tools to registered handlers and surfaces failures', async () => {
     const registry = new McpRegistry();
-    registry.register('hermes-agent', 'execute', { transport: 'native' });
+    registry.register('subagent', 'execute', { transport: 'native' });
     const router = new McpRouter(registry, {
       nativeHandlers: new Map([
-        ['hermes-agent.execute', async (input: Record<string, unknown>) => {
+        ['subagent.execute', async (input: Record<string, unknown>) => {
           const prompt = String(input.prompt || '');
-          if (!prompt) throw new Error('hermes-agent.execute needs input.prompt');
-          if (String(input.prompt).includes('fail')) throw new Error('Hermes task failed: boom');
+          if (!prompt) throw new Error('subagent.execute needs input.prompt');
+          if (String(input.prompt).includes('fail')) throw new Error('Agent task failed: boom');
           return `RESULT: ${prompt}`;
         }],
       ]),
     });
 
-    const ok = await router.call('hermes-agent', 'execute', { prompt: 'Summarize this repo', model: 'openrouter:deepseek-r1' });
+    const ok = await router.call('subagent', 'execute', { prompt: 'Summarize this repo', model: 'reasoning-model' });
     expect(ok.ok).toBe(true);
     expect(ok.output).toBe('RESULT: Summarize this repo');
     expect(ok.transport).toBe('native');
 
-    const missing = await router.call('hermes-agent', 'execute', {});
+    const missing = await router.call('subagent', 'execute', {});
     expect(missing.ok).toBe(false);
     expect(missing.error).toMatch(/needs input.prompt/);
 
-    const failed = await router.call('hermes-agent', 'execute', { prompt: 'make it fail' });
+    const failed = await router.call('subagent', 'execute', { prompt: 'make it fail' });
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/boom/);
   });
@@ -115,6 +115,33 @@ describe('McpHttpConnector + CredentialVault', () => {
       expect(requests[0].args.to).toBe('+1555');
       expect(requests[0].auth).toBe('Bearer s3cret');
       expect(requests[0].mcpVersion).toBeTruthy();
+    } finally {
+      server.close();
+    }
+  });
+
+  it('parses streamable-HTTP SSE responses (event: message / data: {...})', async () => {
+    const server = require('http').createServer((req: any, res: any) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(
+          'event: message\r\n' +
+          'data: {"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"answer from SSE"}]}}\r\n\r\n',
+        );
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, resolve));
+    const port = server.address().port;
+
+    try {
+      const registry = new McpRegistry();
+      registry.register('deepwiki', 'ask_question', { endpoint: `http://127.0.0.1:${port}/` });
+      const connector = new McpHttpConnector({ vault: undefined });
+      const router = new McpRouter(registry, { connector });
+      const result = await router.call('deepwiki', 'ask_question', {});
+      expect(result.ok).toBe(true);
+      expect(result.output).toBe('answer from SSE');
     } finally {
       server.close();
     }

@@ -14,7 +14,7 @@ import { MeteringService } from './MeteringService';
 import { UmbraConfig } from '../../types';
 
 export class MeteredLLMConnector extends LLMConnector {
-  private metering: MeteringService;
+  protected metering: MeteringService;
 
   constructor(config: UmbraConfig, metering: MeteringService) {
     super(config);

@@ -115,7 +115,7 @@ export class LiveShadowEngine {
   }
 
   /**
-   * Take-over API: an agent (or Hermes) requests control of the screen.
+   * Take-over API: an agent (or the reasoning engine) requests control of the screen.
    * Granted unless a takeover is already in flight. A token gates the
    * take-over session and auto-expires.
    */

@@ -1,4 +1,5 @@
-import { Task, TaskStep, TaskResult } from '../../types';
+import { Task, TaskStep, TaskResult, PlanTier } from '../../types';
+import { TaskStore } from './TaskStore';
 import * as path from 'path';
 import { LLMConnector, LLMMessage } from './LLMConnector';
 import { TaskPlanner, PlannedStep } from './TaskPlanner';
@@ -48,8 +49,13 @@ export class AgentRuntime {
   private metering?: MeteringService;
   private graphify?: GraphifyContextEngine;
   private hermes?: HermesAgentBridge;
+  /** When true, whole tasks are silently routed through the dedicated reasoning engine. */
+  private autoDelegate: boolean = false;
   private activeTasks: Map<string, Task> = new Map();
   private maxSteps: number = 15;
+  /** Durable task queue — enables cross-restart (and cross-node) resume. */
+  private store?: TaskStore;
+  private nodeRole: 'desktop' | 'cloud' = 'desktop';
 
   constructor(
     llm: LLMConnector,
@@ -82,6 +88,12 @@ export class AgentRuntime {
     metering?: MeteringService;
     graphify?: GraphifyContextEngine;
     hermes?: HermesAgentBridge;
+    /** Route whole tasks through the built-in reasoning engine when available. */
+    autoDelegate?: boolean;
+    /** Durable task queue for cross-restart resume. */
+    taskStore?: TaskStore;
+    /** Which node is running ('desktop' = the user's PC, 'cloud' = headless box). */
+    nodeRole?: 'desktop' | 'cloud';
   }): void {
     if (subsystems.swarm) this.swarm = subsystems.swarm;
     if (subsystems.healer) this.healer = subsystems.healer;
@@ -101,6 +113,9 @@ export class AgentRuntime {
     if (subsystems.metering) this.metering = subsystems.metering;
     if (subsystems.graphify) this.graphify = subsystems.graphify;
     if (subsystems.hermes) this.hermes = subsystems.hermes;
+    if (subsystems.autoDelegate !== undefined) this.autoDelegate = subsystems.autoDelegate;
+    if (subsystems.taskStore) this.store = subsystems.taskStore;
+    if (subsystems.nodeRole) this.nodeRole = subsystems.nodeRole;
   }
 
   async submitTask(description: string, priority: number = 0): Promise<Task> {
@@ -110,9 +125,11 @@ export class AgentRuntime {
       status: 'pending',
       priority,
       createdAt: new Date(),
+      resumeNode: this.nodeRole,
     };
 
     this.activeTasks.set(task.id, task);
+    this.persist(task);
     eventBus.emit('task:created', task.id);
     getLogger().info({ taskId: task.id, description }, 'Task submitted');
 
@@ -124,9 +141,6 @@ export class AgentRuntime {
   }
 
   private async executeTask(task: Task): Promise<void> {
-    task.status = 'planning';
-    task.startedAt = new Date();
-    eventBus.emit('task:started', task.id);
     let sessionHeld = false;
 
     try {
@@ -142,7 +156,21 @@ export class AgentRuntime {
         }
       }
 
-      if (this.consent) {
+      // ── Resume path: a previous node already planned (and possibly partially
+      //    ran) this task. Continue from the checkpoint instead of re-planning.
+      if (task.plan && task.plan.length > 0) {
+        eventBus.emit('task:started', task.id);
+        await this.runPlanSteps(task);
+        return;
+      }
+
+      task.status = 'planning';
+      task.startedAt = new Date();
+      task.resumeNode = this.nodeRole;
+      this.persist(task);
+      eventBus.emit('task:started', task.id);
+
+      if (!task.consentGranted && this.consent) {
         const result = await this.consent.request(`Execute task: ${task.description}`);
         if (result !== 'granted') {
           task.status = 'failed';
@@ -151,64 +179,33 @@ export class AgentRuntime {
           getLogger().warn({ taskId: task.id }, 'Task blocked by consent gate');
           return;
         }
+        task.consentGranted = true;
+        this.persist(task);
       }
 
       if (await this.tryFastEngine(task)) return;
+
+      // Silent whole-task delegation: when the dedicated reasoning engine is
+      // available, hand the task to it and only fall back to the visible
+      // step-by-step loop if it cannot handle the task.
+      if (await this.tryAutoDelegate(task)) return;
 
       const plan = await this.planner.planTask(task.id, task.description);
 
       if (plan.needsClarification) {
         task.status = 'pending';
+        this.persist(task);
         getLogger().info({ taskId: task.id, question: plan.clarificationQuestion }, 'Task needs clarification');
         return;
       }
 
+      task.plan = plan.steps;
+      task.steps = [];
+      task.completedStepCount = 0;
       task.status = 'executing';
-      const steps: TaskStep[] = [];
+      this.persist(task);
 
-      for (const plannedStep of plan.steps) {
-        if (steps.length >= this.maxSteps) {
-          getLogger().warn({ taskId: task.id, maxSteps: this.maxSteps }, 'Task step budget exhausted');
-          break;
-        }
-
-        if (this.consent && (await this.consent.checkEmergencyStop())) {
-          task.status = 'cancelled';
-          task.error = 'Emergency stop armed';
-          eventBus.emit('task:cancelled', task.id);
-          getLogger().warn({ taskId: task.id }, 'Task cancelled by emergency stop');
-          return;
-        }
-
-        const step = await this.executeStep(task, plannedStep, steps.length);
-        steps.push(step);
-
-        if (step.error) {
-          task.status = 'healing';
-          const healed = await this.attemptHealing(task, plannedStep);
-          if (!healed) {
-            task.status = 'failed';
-            task.error = step.error;
-            eventBus.emit('task:failed', task.id, step.error);
-            return;
-          }
-          task.status = 'executing';
-        }
-      }
-
-      const result: TaskResult = {
-        summary: `Completed: ${task.description}`,
-        output: null,
-        steps,
-        totalTimeMs: Date.now() - task.startedAt.getTime(),
-      };
-
-      task.status = 'completed';
-      task.completedAt = new Date();
-      task.result = result;
-      eventBus.emit('task:completed', task.id, result);
-
-      await this.recordExecution(task, steps);
+      await this.runPlanSteps(task);
 
     } catch (err: any) {
       task.status = 'failed';
@@ -216,7 +213,108 @@ export class AgentRuntime {
       eventBus.emit('task:failed', task.id, err.message);
     } finally {
       if (sessionHeld) this.metering?.closeSession();
+      if (this.isTerminal(task)) this.store?.remove(task.id);
     }
+  }
+
+  /** Run a task's plan steps, starting from the checkpoint (or 0). */
+  private async runPlanSteps(task: Task): Promise<void> {
+    const plan = task.plan!;
+    const steps = task.steps ?? [];
+    const start = task.completedStepCount ?? steps.length;
+    task.status = 'executing';
+    if (!task.startedAt) task.startedAt = new Date();
+    this.persist(task);
+
+    for (let i = start; i < plan.length; i++) {
+      if (steps.length >= this.maxSteps) {
+        getLogger().warn({ taskId: task.id, maxSteps: this.maxSteps }, 'Task step budget exhausted');
+        break;
+      }
+
+      if (this.consent && (await this.consent.checkEmergencyStop())) {
+        task.status = 'cancelled';
+        task.error = 'Emergency stop armed';
+        eventBus.emit('task:cancelled', task.id);
+        this.persist(task);
+        return;
+      }
+
+      const step = await this.executeStep(task, plan[i], i);
+      steps.push(step);
+      task.completedStepCount = i + 1;
+      this.persist(task); // checkpoint after every step
+
+      if (step.error) {
+        task.status = 'healing';
+        this.persist(task);
+        const healed = await this.attemptHealing(task, plan[i]);
+        if (!healed) {
+          task.status = 'failed';
+          task.error = step.error;
+          eventBus.emit('task:failed', task.id, step.error);
+          return;
+        }
+        task.status = 'executing';
+      }
+    }
+
+    const result: TaskResult = {
+      summary: `Completed: ${task.description}`,
+      output: null,
+      steps,
+      totalTimeMs: Date.now() - (task.startedAt?.getTime() ?? Date.now()),
+    };
+
+    task.status = 'completed';
+    task.completedAt = new Date();
+    task.result = result;
+    this.persist(task);
+    eventBus.emit('task:completed', task.id, result);
+
+    await this.recordExecution(task, steps);
+  }
+
+  private persist(task: Task): void {
+    this.store?.save(task);
+  }
+
+  private isTerminal(task: Task): boolean {
+    return task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
+  }
+
+  /**
+   * Reload unfinished tasks from the durable queue and resume them.
+   *
+   * Gating: the user's own PC (desktop role) always resumes its queue. A cloud
+   * node only resumes when the plan is paid (pro/ultimate/byok) — cloud
+   * continuation is not part of the free plan.
+   *
+   * @returns the number of tasks resumed.
+   */
+  async resumePendingTasks(nodeRole: 'desktop' | 'cloud', tier: PlanTier): Promise<number> {
+    if (!this.store) return 0;
+    const unfinished = this.store.loadUnfinished();
+    let resumed = 0;
+
+    for (const task of unfinished) {
+      if (nodeRole === 'cloud' && tier === 'free') {
+        getLogger().warn({ taskId: task.id }, 'Cloud resume skipped — free plan does not include cloud continuation');
+        continue;
+      }
+      task.resumeNode = nodeRole;
+      this.activeTasks.set(task.id, task);
+      eventBus.emit('task:created', task.id);
+      this.executeTask(task).catch(err => {
+        getLogger().error({ taskId: task.id, err }, 'Resumed task execution failed');
+      });
+      resumed++;
+    }
+
+    if (resumed > 0) {
+      getLogger().info({ resumed, nodeRole, tier }, 'Resumed in-flight tasks from the durable queue');
+    }
+    return resumed;
   }
 
   private async executeStep(task: Task, plannedStep: PlannedStep, index: number): Promise<TaskStep> {
@@ -374,7 +472,7 @@ export class AgentRuntime {
           });
           break;
         case 'delegate':
-          if (!this.hermes) throw new Error('Hermes bridge not configured');
+          if (!this.hermes) throw new Error('Dedicated reasoning engine not configured');
           step.result = await this.delegateToHermes(task, plannedStep);
           break;
         default:
@@ -478,13 +576,53 @@ export class AgentRuntime {
   }
 
   /**
-   * Delegate a step (or the whole task) to Hermes Agent by Nous Research.
-   * Uses headless one-shot mode (`hermes -z <prompt>`); returns the agent's
-   * final response text.
+   * Silently route a whole task through the dedicated reasoning engine.
+   * Returns true when the task was completed this way (or the failure is fatal);
+   * returns false so the caller falls back to the visible step-by-step loop.
+   */
+  private async tryAutoDelegate(task: Task): Promise<boolean> {
+    if (!this.autoDelegate || !this.hermes?.isInstalled()) return false;
+    getLogger().info({ taskId: task.id }, 'Routing task through built-in reasoning engine');
+    try {
+      const output = await this.delegateTask(task.description);
+      const started = task.startedAt || new Date();
+      const steps: TaskStep[] = [
+        {
+          description: `Completed: ${task.description}`,
+          action: 'delegate',
+          params: {},
+          startedAt: started,
+          completedAt: new Date(),
+          result: output,
+        },
+      ];
+      const result: TaskResult = {
+        summary: output,
+        output,
+        steps,
+        totalTimeMs: Date.now() - started.getTime(),
+      };
+      task.status = 'completed';
+      task.completedAt = new Date();
+      task.result = result;
+      eventBus.emit('task:completed', task.id, result);
+      await this.recordExecution(task, steps);
+      this.vault?.log('task_completed', task.description, { engine: 'subagent' }, output);
+      return true;
+    } catch (err: any) {
+      getLogger().warn({ taskId: task.id, err: err.message }, 'Dedicated engine unavailable — falling back to step-by-step execution');
+      task.status = 'planning';
+      return false;
+    }
+  }
+
+  /**
+   * Delegate a step (or the whole task) to the built-in dedicated reasoning
+   * engine. Runs headless one-shot mode and returns the final response text.
    */
   async delegateToHermes(task: Task, plannedStep?: PlannedStep): Promise<string> {
-    if (!this.hermes) throw new Error('Hermes bridge not configured');
-    if (!this.hermes.isInstalled()) throw new Error('Hermes not installed — run the Nous Research installer, then set config.hermes.bin');
+    if (!this.hermes) throw new Error('Dedicated reasoning engine not configured');
+    if (!this.hermes.isInstalled()) throw new Error('Dedicated reasoning engine not available');
 
     const prompt = String(plannedStep?.params?.prompt || task.description);
     const provider = plannedStep?.params?.provider ? String(plannedStep.params.provider) : undefined;
@@ -493,18 +631,18 @@ export class AgentRuntime {
 
     const res = await this.hermes.runTask(prompt, { provider, model, maxTurns });
     if (res.ok) {
-      this.vault?.log('task_delegated', task.id, { engine: 'hermes', durationMs: res.durationMs }, res.output);
-      return `${res.output}${res.durationMs > 0 ? `\n[hermes · ${res.durationMs}ms]` : ''}`;
+      this.vault?.log('task_delegated', task.id, { engine: 'subagent', durationMs: res.durationMs }, res.output);
+      return res.output;
     }
-    throw new Error(`Hermes task failed${res.error ? `: ${res.error}` : ''}`);
+    throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
   }
 
-  /** One-shot task execution handed entirely to Hermes. */
+  /** One-shot task execution handed entirely to the dedicated reasoning engine. */
   async delegateTask(description: string, options: { provider?: string; model?: string; timeoutMs?: number } = {}): Promise<string> {
-    if (!this.hermes) throw new Error('Hermes bridge not configured');
-    if (!this.hermes.isInstalled()) throw new Error('Hermes not installed — run the Nous Research installer, then set config.hermes.bin');
+    if (!this.hermes) throw new Error('Dedicated reasoning engine not configured');
+    if (!this.hermes.isInstalled()) throw new Error('Dedicated reasoning engine not available');
     const res = await this.hermes.runTask(description, options);
-    if (!res.ok) throw new Error(`Hermes task failed${res.error ? `: ${res.error}` : ''}`);
+    if (!res.ok) throw new Error(`Agent task failed${res.error ? `: ${res.error}` : ''}`);
     return res.output;
   }
 
@@ -877,6 +1015,24 @@ Relevant knowledge: ${contextBlock}` },
   private async recordExecution(task: Task, steps: TaskStep[]): Promise<void> {
     if (this.memory) {
       this.memory.logActivity(task.id, task.description, 'completed', steps.length);
+      // Persist the full task (plan + result) so later sessions can recall it.
+      this.memory.saveTaskHistory(
+        task.id,
+        task.description,
+        steps,
+        task.result ?? null,
+        task.status,
+        task.result?.totalTimeMs ?? 0,
+      );
+      try {
+        await this.memory.addVector(
+          'task',
+          task.id,
+          `${task.description}\n${(task.result?.summary || '').slice(0, 800)}`,
+        );
+      } catch {
+        // Memory embedding is best-effort — never fail the task over it.
+      }
     }
 
     await this.knowledge.learnFromExecution(
@@ -890,12 +1046,14 @@ Relevant knowledge: ${contextBlock}` },
     const task = this.activeTasks.get(taskId);
     if (task) {
       task.status = 'cancelled';
+      this.persist(task);
+      this.store?.remove(task.id);
       eventBus.emit('task:cancelled', taskId);
     }
   }
 
   getActiveTasks(): Task[] {
-    return Array.from(this.activeTasks.values()).filter(t => t.status === 'pending' || t.status === 'planning' || t.status === 'executing');
+    return Array.from(this.activeTasks.values()).filter(t => t.status === 'pending' || t.status === 'planning' || t.status === 'executing' || t.status === 'healing');
   }
 
   getTask(taskId: string): Task | undefined {

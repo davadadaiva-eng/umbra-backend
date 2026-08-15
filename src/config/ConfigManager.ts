@@ -3,6 +3,7 @@ import * as path from 'path';
 import { UmbraConfig, ModelProvider, McpConnectorConfig } from '../types';
 import { getLogger } from '../core/Logger';
 import { MCP_CATALOG, McpCatalogEntry } from '../core/mcp/McpCatalog';
+import { DEFAULT_ROUTING } from '../core/metering/ModelRouter';
 
 const DEFAULT_CONFIG: UmbraConfig = {
   provider: 'ollama',
@@ -58,11 +59,19 @@ const DEFAULT_CONFIG: UmbraConfig = {
     ],
     relayFps: 10,
   },
+  devices: {
+    enabled: true,
+    hubPort: 8788,
+    hubUrl: '',
+    name: 'Umbra Desktop',
+    role: 'desktop',
+  },
   plan: {
     tier: 'free',
     apiCreditPool: 0,
     imagesMonthly: 0,
     videoMonthly: 0,
+    routing: { ...DEFAULT_ROUTING },
   },
   graphify: {
     enabled: true,
@@ -88,6 +97,16 @@ const DEFAULT_CONFIG: UmbraConfig = {
     enabled: false,
     stt: 'none',
     tts: 'none',
+    loopbackEnabled: true,
+    chunkSec: 12,
+    ordersEnabled: true,
+    screenShare: true,
+  },
+  awareness: {
+    enabled: true,
+    watch: true,
+    watchIntervalMs: 1000,
+    followCursor: true,
   },
   telco: {
     enabled: false,
@@ -100,10 +119,24 @@ const DEFAULT_CONFIG: UmbraConfig = {
     defaultCpus: 2,
     defaultMemoryMb: 2048,
   },
+  image: {
+    enabled: false,
+    provider: 'huggingface',
+    model: 'black-forest-labs/FLUX.1-schnell',
+    apiKey: '',
+  },
+  voice: {
+    enabled: false,
+    sttProvider: 'none',
+    sttEndpoint: 'https://api.openai.com/v1/audio/transcriptions',
+    sttApiKey: '',
+    sttModel: 'whisper-1',
+  },
   hermes: {
     enabled: true,
     bin: '',
     taskTimeoutMs: 300_000,
+    autoDelegate: true,
   },
 };
 
@@ -227,6 +260,7 @@ export class ConfigManager {
       authType: entry.authType,
       apiKeyHeader: entry.apiKeyHeader,
       credentialKey: entry.credentialKey,
+      tool: entry.tool,
       enabled: false,
     };
   }

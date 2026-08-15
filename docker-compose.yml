@@ -1,0 +1,37 @@
+services:
+  umbra:
+    build: .
+    container_name: umbra-os
+    restart: unless-stopped
+    ports:
+      - "8787:8787"   # REST + WS + MCP API
+      - "8788:8788"   # DeviceHub WebSocket (device mesh)
+    environment:
+      - UMBRA_HEADLESS=1
+      - UMBRA_ROLE=cloud
+      - UMBRA_CONSENT_AUTOGRANT=1
+      # Public base URL used to mint QR/join links (set to your domain).
+      # - UMBRA_PUBLIC_URL=https://umbra.example.com
+      # Provider keys come from the config volume below (git-ignored), or
+      # pass them as env vars for a CI/deploy secret store.
+      # - UMBRA_HWID=cloud-server-01
+    volumes:
+      - umbra-data:/root/.umbra
+
+  # Local, free, private voice-to-text (whisper.cpp).
+  # Download the model first: MODEL=medium.en ./scripts/download-whisper-model.sh
+  # Then set voice.sttProvider = "whisper-local" and
+  # voice.sttEndpoint = "http://whisper:8080" in the cloud's config.
+  whisper:
+    image: ghcr.io/ggerganov/whisper.cpp:main
+    container_name: umbra-whisper
+    restart: unless-stopped
+    # medium.en = strong accuracy (~2.1 GB RAM); use small.en (~852 MB) on a 4 GB box.
+    command: ["-m", "/models/ggml-medium.en.bin", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./models:/models
+    ports:
+      - "8080:8080"
+
+volumes:
+  umbra-data:

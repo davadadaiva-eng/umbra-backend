@@ -208,6 +208,11 @@ export class VectorMemory {
         total_time_ms INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS user_facts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
       CREATE TABLE IF NOT EXISTS sessions (
         session_id TEXT PRIMARY KEY,
         started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -780,6 +785,19 @@ export class VectorMemory {
         status,
         totalTimeMs,
       );
+  }
+
+  /** Persist a fact the user told the assistant about themselves. */
+  rememberFact(text: string): number {
+    const trimmed = text.trim();
+    if (!trimmed) throw new Error('fact text is required');
+    const info = this.db.prepare('INSERT INTO user_facts (text) VALUES (?)').run(trimmed);
+    return Number(info.lastInsertRowid);
+  }
+
+  getFacts(limit: number = 50): { id: number; text: string; createdAt: Date }[] {
+    const rows = this.db.prepare('SELECT * FROM user_facts ORDER BY id DESC LIMIT ?').all(limit) as any[];
+    return rows.map(r => ({ id: r.id, text: r.text, createdAt: new Date(r.created_at) }));
   }
 
   query(sql: string, params?: any[]): any[] {

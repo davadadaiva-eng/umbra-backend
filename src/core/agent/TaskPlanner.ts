@@ -1,5 +1,6 @@
 import { KnowledgeGraph } from '../../knowledge/KnowledgeGraph';
 import { LLMConnector, LLMMessage } from './LLMConnector';
+import { VectorMemory } from '../memory/VectorMemory';
 import { getLogger } from '../Logger';
 
 export interface PlannedStep {
@@ -32,16 +33,24 @@ export interface TaskPlan {
 export class TaskPlanner {
   private knowledge: KnowledgeGraph;
   private llm: LLMConnector;
+  private memory?: VectorMemory;
 
-  constructor(knowledge: KnowledgeGraph, llm: LLMConnector) {
+  constructor(knowledge: KnowledgeGraph, llm: LLMConnector, memory?: VectorMemory) {
     this.knowledge = knowledge;
     this.llm = llm;
+    this.memory = memory;
+  }
+
+  /** Attach persistent session memory so the planner recalls past tasks. */
+  setMemory(memory: VectorMemory): void {
+    this.memory = memory;
   }
 
   async planTask(taskId: string, description: string, context?: string): Promise<TaskPlan> {
     getLogger().info({ taskId, description }, 'Planning task');
 
     const relevantKnowledge = await this.searchRelevantKnowledge(description);
+    const memoryContext = await this.recallMemory(description);
 
     const knowledgeContext = relevantKnowledge.map(n =>
       `[${n.id}] ${n.title}\n${n.content.substring(0, 1000)}`
@@ -52,6 +61,9 @@ Your job is to break down a user request into a sequence of executable steps.
 
 You have access to this knowledge base:
 ${knowledgeContext}
+
+Persistent memory (past sessions the user already worked on):
+${memoryContext || '(none yet)'}
 
 Rules:
 1. Break complex tasks into simple, atomic steps
@@ -78,7 +90,7 @@ Rules:
     - mcp_call {connector, tool?, input} — invoke a registered connector tool. connector is the catalog id (e.g. communication-slack), tool defaults to "invoke", input is the argument object. Use when the user names a specific service ("post to slack", "send invoice", "search drive") or when a step needs live data from an external service.
     - skill {intent?, tool?, input?} — run a skill from the 190+ skill stack (routing by intent).
     - skill_learn {skill, result, note?} — record a successful/error skill invocation for the recorder.
-    - delegate {prompt, provider?, model?, maxTurns?} — hand a self-contained sub-task (deep research, a big coding task, document analysis) to Hermes Agent (Nous Research), a separate agent process, and wait for its final answer. Use for tasks that are better done by a dedicated agent: "deep-dive this paper", "write this full module", "audit this codebase". Keep the prompt self-contained.
+    - delegate {prompt, provider?, model?, maxTurns?} — hand a self-contained sub-task (deep research, a big coding task, document analysis) to the built-in dedicated reasoning engine (a separate agent process), and wait for its final answer. Use for tasks that are better done by a dedicated agent: "deep-dive this paper", "write this full module", "audit this codebase". Keep the prompt self-contained.
 12. YOUR CODE REPOS (registered projects on this machine — the user's own projects): the agent can read, edit, run commands in and open any registered repo:
     - repo_status {repo?} — git status of one repo, or all registered repos if repo omitted (branch, last commit, dirty files). Run this FIRST when a task mentions one of the user's projects.
     - repo_list {repo, path?} — list files in the repo
@@ -150,6 +162,29 @@ Respond with a JSON object:
       return { ...plan, steps: refined.steps || plan.steps, confidence: refined.confidence || plan.confidence };
     } catch {
       return plan;
+    }
+  }
+
+  /** Pull user facts + recent/similar past tasks into the planning context. */
+  private async recallMemory(description: string): Promise<string> {
+    if (!this.memory) return '';
+    try {
+      const facts = this.memory.getFacts(20);
+      const similar = await this.memory.searchSimilar(description, { k: 5, kind: 'task' });
+      const recent = this.memory.getRecentActivity(5);
+      const parts: string[] = [];
+      if (facts.length > 0) {
+        parts.push('About the user:\n' + facts.map(f => `- ${f.text}`).join('\n'));
+      }
+      if (similar.length > 0) {
+        parts.push('Similar past tasks:\n' + similar.map(s => `- ${s.text.slice(0, 300)}`).join('\n'));
+      }
+      if (recent.length > 0) {
+        parts.push('Recent tasks:\n' + recent.map(r => `- ${r.description} (${r.status})`).join('\n'));
+      }
+      return parts.join('\n\n');
+    } catch {
+      return '';
     }
   }
 

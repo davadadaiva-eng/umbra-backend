@@ -128,15 +128,45 @@ export class McpHttpConnector {
       }
       const text = await res.text();
       if (!text) return { jsonrpc: '2.0', result: { content: [] } };
-      try {
-        return JSON.parse(text) as JsonRpcResponse;
-      } catch {
-        // Not JSON — tolerate as a plain-text result.
-        return { jsonrpc: '2.0', result: { content: [{ type: 'text', text }] } };
-      }
+      return this.parseResponse(text);
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Parse a streamable-HTTP MCP response body.
+   *
+   * Most remote MCP servers (DeepWiki, etc.) answer over `text/event-stream`:
+   *
+   *     event: message
+   *     data: {"jsonrpc":"2.0",...}
+   *
+   * while others return a plain `application/json` document. Handle both, and
+   * fall back to surfacing the raw text (e.g. a plain REST endpoint) when it
+   * is neither JSON nor SSE.
+   */
+  private parseResponse(text: string): JsonRpcResponse {
+    const trimmed = text.trim();
+    try {
+      return JSON.parse(trimmed) as JsonRpcResponse;
+    } catch {
+      // Not a single JSON document — try SSE `data:` lines.
+    }
+    for (const line of trimmed.split(/\r?\n/)) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice('data:'.length).trim();
+      if (!payload) continue;
+      try {
+        const parsed = JSON.parse(payload);
+        if (parsed && (parsed.result !== undefined || parsed.error)) {
+          return parsed as JsonRpcResponse;
+        }
+      } catch {
+        // This data line is not the JSON-RPC result (or is multi-line).
+      }
+    }
+    return { jsonrpc: '2.0', result: { content: [{ type: 'text', text: trimmed }] } };
   }
 
   /** Pull the text out of an MCP result while preserving structured data. */

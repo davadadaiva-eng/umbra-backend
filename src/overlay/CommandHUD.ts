@@ -22,6 +22,7 @@ export class CommandHUD {
   private macros?: MacroSynthesizer;
   private config?: ConfigManager;
   private knowledge?: KnowledgeGraph;
+  private screenAsk?: (question: string, intent: 'answer' | 'help' | 'finish') => Promise<unknown>;
   private history: HUDCommand[] = [];
   private visible: boolean = false;
   private overlayProcess?: any;
@@ -39,11 +40,13 @@ export class CommandHUD {
     macros?: MacroSynthesizer;
     config?: ConfigManager;
     knowledge?: KnowledgeGraph;
+    screenAsk?: (question: string, intent: 'answer' | 'help' | 'finish') => Promise<unknown>;
   }): void {
     if (subsystems.agent) this.agent = subsystems.agent;
     if (subsystems.macros) this.macros = subsystems.macros;
     if (subsystems.config) this.config = subsystems.config;
     if (subsystems.knowledge) this.knowledge = subsystems.knowledge;
+    if (subsystems.screenAsk) this.screenAsk = subsystems.screenAsk;
   }
 
   show(): void {
@@ -76,6 +79,24 @@ export class CommandHUD {
     if (this.history.length > 100) this.history.shift();
 
     getLogger().info({ input, type: command.type }, 'HUD command received');
+
+    // Screen-aware asks: `?` answers a question about the screen; `help` /
+    // `finish` asks Umbra to help finish (or take over) the on-screen task.
+    if (command.type === 'text') {
+      const text = input.trim();
+      if (text.startsWith('?')) {
+        const question = text.slice(1).trim();
+        if (question && this.screenAsk) {
+          await this.screenAsk(question, 'answer');
+          return;
+        }
+      }
+      const helpMatch = text.match(/^(help|finish|help me finish|take over)\s+(.+)$/i);
+      if (helpMatch && this.screenAsk) {
+        await this.screenAsk(helpMatch[2].trim(), 'finish');
+        return;
+      }
+    }
 
     if (command.type === 'macro') {
       const macroName = input.substring(1).trim();

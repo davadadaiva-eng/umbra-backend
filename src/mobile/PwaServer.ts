@@ -10,6 +10,11 @@ export interface PwaServerOptions {
   signalingPort: number;
   pairing: PairingManager;
   getStatus: () => { active: boolean; clients: number; pairedDevices: number };
+  /**
+   * "Ask Umbra" handler — runs the task on a real agent (cloud or local model)
+   * instead of a stub. Returns where the task was dispatched and its id.
+   */
+  onChat?: (message: string, target?: string) => Promise<{ taskId: string; target: string }>;
 }
 
 /**
@@ -56,6 +61,11 @@ export class PwaServer {
       return;
     }
 
+    if (req.method === 'POST' && parsed.pathname === '/api/chat') {
+      this.handleChat(req, res);
+      return;
+    }
+
     switch (parsed.pathname) {
       case '/':
       case '/index.html':
@@ -72,6 +82,46 @@ export class PwaServer {
       default:
         this.json(res, 404, { error: 'Not found' });
     }
+  }
+
+  private async handleChat(req: import('http').IncomingMessage, res: import('http').ServerResponse): Promise<void> {
+    if (!this.options.onChat) {
+      this.json(res, 501, { error: 'Agent not configured — no onChat handler' });
+      return;
+    }
+    let body: { message?: string; target?: string } = {};
+    try {
+      body = await this.readJson(req);
+    } catch {
+      this.json(res, 400, { error: 'Invalid JSON body' });
+      return;
+    }
+    const message = (body.message || '').trim();
+    if (!message) {
+      this.json(res, 400, { error: 'message is required' });
+      return;
+    }
+    try {
+      const dispatch = await this.options.onChat(message, body.target || 'auto');
+      this.json(res, 200, { dispatch });
+    } catch (err: any) {
+      this.json(res, 500, { error: err.message || 'Task dispatch failed' });
+    }
+  }
+
+  private readJson(req: import('http').IncomingMessage): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+        } catch (err) {
+          reject(err);
+        }
+      });
+      req.on('error', reject);
+    });
   }
 
   private newPayload(): PairingPayload {

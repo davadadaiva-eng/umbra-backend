@@ -14,6 +14,8 @@ export interface LLMCompletionOptions {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  /** Task category hint for tiered model routing. */
+  task?: 'general' | 'frontend' | 'difficult';
 }
 
 export interface LLMCompletionResult {
@@ -21,6 +23,10 @@ export interface LLMCompletionResult {
   modelUsed: string;
   totalTokens: number;
   finishReason: string;
+  /** Input (prompt) tokens, when the provider reports them. */
+  inputTokens?: number;
+  /** Output (completion) tokens, when the provider reports them. */
+  outputTokens?: number;
 }
 
 export class LLMConnector {
@@ -96,6 +102,8 @@ export class LLMConnector {
       content: data.message?.content || '',
       modelUsed: model,
       totalTokens: (data.prompt_eval_count || 0) + (data.eval_count || 0),
+      inputTokens: data.prompt_eval_count || 0,
+      outputTokens: data.eval_count || 0,
       finishReason: data.done_reason || 'stop',
     };
   }
@@ -113,7 +121,6 @@ export class LLMConnector {
   ): Promise<LLMCompletionResult> {
     const endpoint = this.config.openai?.endpoint || 'https://api.openai.com/v1';
     const apiKey = this.config.openai?.apiKey;
-    if (!apiKey) throw new Error('OpenAI API key not configured');
 
     const body: any = {
       model,
@@ -125,12 +132,14 @@ export class LLMConnector {
       max_tokens: options.maxTokens ?? 4096,
     };
 
+    // Local OpenAI-compatible servers (llama.cpp, etc.) run without a key —
+    // only attach Authorization when one is configured.
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
     const res = await fetch(`${endpoint}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
+      headers,
       body: JSON.stringify(body),
     });
 
@@ -141,6 +150,8 @@ export class LLMConnector {
       content: data.choices?.[0]?.message?.content || '',
       modelUsed: data.model || model,
       totalTokens: data.usage?.total_tokens || 0,
+      inputTokens: data.usage?.prompt_tokens || 0,
+      outputTokens: data.usage?.completion_tokens || 0,
       finishReason: data.choices?.[0]?.finish_reason || 'stop',
     };
   }
@@ -190,6 +201,8 @@ export class LLMConnector {
       content: data.content?.[0]?.text || '',
       modelUsed: data.model || model,
       totalTokens: (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
+      inputTokens: data.usage?.input_tokens || 0,
+      outputTokens: data.usage?.output_tokens || 0,
       finishReason: data.stop_reason || 'stop',
     };
   }

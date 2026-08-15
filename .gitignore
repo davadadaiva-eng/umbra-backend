@@ -13,3 +13,11 @@ __pycache__/
 mesh/target/
 mesh/.cargo/
 .freebuff/
+# whisper.cpp test artifacts (binaries + models, ~150MB)
+.whisper-test/
+
+# local LLM (llama.cpp binary + GGUF model)
+.local-model/
+
+# generated pairing QR
+pair-qr.png

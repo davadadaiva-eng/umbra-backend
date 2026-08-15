@@ -95,7 +95,7 @@ export class GraphifyContextEngine {
     };
   }
 
-  /** Expand a single clique back to near-verbatim context (Hermes probe). */
+  /** Expand a single clique back to near-verbatim context (reasoning-engine probe). */
   async expandClique(result: CompressedContext, cliqueId: number): Promise<string> {
     const clique = result.cliques.find(c => c.id === cliqueId);
     if (!clique) return '';

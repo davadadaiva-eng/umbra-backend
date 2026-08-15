@@ -28,10 +28,14 @@ function makeConfig(endpoint: string): UmbraConfig {
     compiler: { enabled: false, backend: 'none', outputDir: dir },
     mcp: { enabled: false, connectors: [] },
     shadow: { enabled: false, capture: 'gdi', fps: 0 },
-    meeting: { enabled: false, stt: 'none', tts: 'none' },
+    meeting: { enabled: false, stt: 'none', tts: 'none', loopbackEnabled: true, chunkSec: 12 },
+    awareness: { enabled: true },
     telco: { enabled: false, provider: 'telnyx', fromNumber: '' },
     docker: { enabled: false, socketPath: '', defaultCpus: 0, defaultMemoryMb: 0 },
-    hermes: { enabled: true, bin: '', taskTimeoutMs: 300_000 },
+    image: { enabled: false, provider: 'huggingface', model: '', apiKey: '' },
+    hermes: { enabled: true, bin: '', taskTimeoutMs: 300_000, autoDelegate: true },
+    devices: { enabled: true, hubPort: 8788, hubUrl: '', name: 'test', role: 'desktop' },
+    voice: { enabled: false, sttProvider: 'none', sttEndpoint: '', sttApiKey: '', sttModel: 'whisper-1' },
   };
 }
 

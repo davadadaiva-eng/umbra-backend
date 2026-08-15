@@ -29,7 +29,7 @@ CORE IDEA
 TECH STACK
 ----------
 - Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
-- Jest (ts-jest) for tests — 21 suites, 149 tests, all green
+- Jest (ts-jest) for tests — 30 suites, 219 tests, all green
 - oxlint for linting — zero issues
 - better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
 - node-fetch-free: uses Node 18+ global fetch
@@ -81,7 +81,7 @@ HOW TO BUILD / TEST / RUN
 -------------------------
     npm install          # install deps
     npm run build        # tsc → dist/
-    npm test             # jest (114 tests today)
+    npm test             # jest (219 tests today)
     npm run lint         # oxlint
 
 Run requires either a local Ollama (free, default:
@@ -104,13 +104,14 @@ Generated with sane defaults by ConfigManager on first run. Key sections
 (see src/types.ts UmbraConfig):
     provider / models            — ollama | openai | anthropic | openai-compatible
     plan.tier                    — free | byok | pro | ultimate (budget metering)
+    plan.routing                 — tiered model routing + rate limits (optional)
     p2p                          — webPort, signalingPort, stunServers, relayFps
     mcp.connectors               — external tool endpoints (vault-backed creds)
     graphify                     — chunkTokens, summaryTokens, maxContextTokens
     compiler                     — skill native backend (none | node | tcc | clang)
     shadow, meeting, telco, docker — feature toggles + provider settings
 
-WHAT IS DONE (state: build+tests+lint green, 149 tests / 21 suites)
+WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
 -------------------------------------------------------------------
 1. Agent loop: planning (with clarification), step execution (browse, desktop,
    ghost real-desktop, files, repos, video tools, web search), self-healing,
@@ -127,25 +128,101 @@ WHAT IS DONE (state: build+tests+lint green, 149 tests / 21 suites)
    PWA control plane, live frame preview, shadow takeover.
 6. Video: producer with script/narration via OpenMontage tools; meeting agent;
    Telnyx SMS/calls; Docker worker daemon; encryption vault.
+7. Model routing (ModelRouter + RoutedLLMConnector): task-appropriate model
+   slots — free (OpenRouter cloud free), fast (DeepSeek V4 Flash), reasoning
+   (DeepSeek-R1), frontend (Muse Spark 1.2), difficult (Claude Sonnet 5) —
+   with per-token pricing and hard cost budgets auto-assigned from the tier:
+   Free (€0, cloud free models or BYOK), BYOK (€0, your own key, uncapped),
+   Pro (€19 → $5/mo: Sonnet $2, DeepSeek Flash $1, DeepSeek-R1 $1, Muse Spark
+   1.2 $1), Ultimate (€38 → $10/mo: double every slot). The cost model bakes
+   in prompt caching (85% cache-hit), Graphify input compression, and Caveman
+   output capping (800 tokens/request), all active with the plan. When a paid
+   slot's budget or provider fails, the router spills over to the cloud free
+   model so work never runs out. Monthly spend counters persist across
+   restarts.
+8. BYOK + live validation: POST /api/config/provider sets the user's own
+   provider/keys/models (masked on read), POST /api/llm/test runs a live
+   1-token validation call, GET /api/llm/models reports routing + usage.
+   OpenMontage tools are auto-discovered and exposed as native MCP tools
+   (GET /api/openmontage/tools).
+9. Image generation (Flux Schnell): ImageGenerator + POST /api/image/generate
+   via Hugging Face Inference API or Replicate; PNGs land in ~/.umbra/generated.
+10. Persistent memory: every completed task is saved (plan + result) and
+    vector-indexed; the planner recalls similar + recent tasks AND permanent
+    user facts ("about the user") into each new plan. POST /api/memory/remember
+    stores a fact; GET /api/memory/recall returns facts + similar tasks. Runs
+    on the native sqlite-vec store — no external service needed (Mem0 / Letta
+    / Zep are heavier drop-in options).
+11. Cloud deployment: Dockerfile + docker-compose.yml + scripts/deploy.sh +
+    docs/cloud-deploy.md (Hetzner CX22 ~$4 for Pro, CX32/CPX21 ~$8-9 for
+    Ultimate). UMBRA_HEADLESS=1 / UMBRA_ROLE=cloud boots the core without the
+    Windows-native subsystems (screen watcher, real-desktop control, Chrome,
+    preview streamer, HUD, P2P/PWA), so the Linux box stays small.
+12. Durable task queue + resume: TaskStore persists every task to
+    <dataDir>/task-queue/ and checkpoints after each step; on boot the node
+    resumes unfinished tasks from the exact step where they stopped.
+    Cloud continuation is a paid feature: the desktop always resumes its own
+    queue, but the cloud only resumes for pro/ultimate/byok (free leaves the
+    queue on disk). POST /api/plan/activate flips plan.cloudContinuation.
+    Sharing the task-queue dir (volume/NFS/sync) lets the PC and cloud hand
+    in-flight work to each other — PC-first while it's on, cloud when it's off.
+13. Device mesh (always-connected): DeviceRegistry (invites + long-lived
+    device tokens, persisted), DeviceHub (WebSocket hub: token auth, presence,
+    heartbeat/sweep, device→device relay), and DeviceClient (auto-reconnect
+    with backoff). A phone scans a QR (or a PC opens a link) to redeem an
+    invite once, then the device reconnects forever to the cloud hub — no
+    re-pairing. The phone can submit tasks (POST /api/task) or relay a
+    `cmd` through the hub to the desktop (executeGhost) and get the result
+    back.    API: GET /api/devices, POST /api/devices/invite|join|revoke|send.
+    Desktop joins the cloud with joinRemoteHub(code) + UMBRA_API_URL.
+14. Unified dispatch + voice: POST /api/chat {message, target?} is the "talk
+    to Umbra" entry point. target 'auto' routes a task to an online desktop
+    (via DeviceHub.request/reply) or runs it on this node (cloud agents); the
+    PWA gained an "Ask Umbra" box + a 🎤 speech button (browser SpeechRecognition
+    → text → /api/chat). One request can spin cloud agents, call MCP connectors,
+    drive the PC if it's on, or hit any connected device.
+15. Voice-to-text: SpeechToText (src/core/voice/) transcribes audio with
+    pluggable backends — 'openai' (Whisper API) or 'whisper-local' (a self-hosted
+    whisper.cpp server). POST /api/voice/transcribe {audio(base64), format,
+    language} → text; GET /api/voice/status. The PWA's free on-device
+    SpeechRecognition remains the zero-cost phone path. whisper.cpp is wired
+    into docker-compose (scripts/download-whisper-model.sh downloads the model;
+    medium.en ≈ 2.1 GB RAM for strong accuracy, small.en ≈ 852 MB for 4 GB).
+    Greedy decoding + language/prompt biasing keeps it from missing words.
+16. Always-on screen awareness + in-meeting agent: ScreenAwareness now has a
+    continuous watch loop (live frame + cursor trail, `screen:update` /
+    `screen:cursor` WS events) so Umbra always sees the screen and follows the
+    cursor; asking mid-task (`? question`, `help ...`, `finish ...` via the HUD
+    or POST /api/screen/ask) is answered from the already-live view. The
+    MeetingCompanion takes orders heard in the transcript ("Hey Umbra, share
+    your screen / take a note / look up ..."), executes them while the meeting
+    runs like a normal user, and can share/stop sharing the screen in Google
+    Meet / Zoom / Teams via best-effort DOM automation in the real Chrome.
+    API: GET /api/screen/live, POST /api/screen/watch, POST /api/meeting/share,
+    POST /api/meeting/stop-share, GET /api/meeting/orders.
 
 HOW TO CONTINUE (roadmap — what collaborators should pick up)
 ------------------------------------------------------------
 1. Setup CLI (scripts/setup.ts or `npm run setup`):
    collect provider + API keys → CredentialVault → write config.json → live
    validation call. (Currently keys are placed manually in config or vault.)
-2. Cloud Docker deployment: Dockerfile + docker-compose.yml + deploy script.
-   NOTE: phone PWA needs HTTPS + a reachable signaling port; a TURN server
-   (or STUN fallback) is needed for WebRTC off-LAN.
-3. Live LLM testing on real providers (Ollama is the off-line default).
-   OpenAI/Anthropic endpoints already implemented in LLMConnector.
+2. Cloud Docker deployment: DONE (Dockerfile, docker-compose.yml, deploy
+   script, docs) + headless boot + durable resume. REMAINING: HTTPS + a TURN
+   server for the phone PWA off-LAN, and a desktop→cloud sync mechanism
+   (rclone/Syncthing/NFS) so the two nodes share the task-queue dir in
+   production (the code path is ready — see docs/cloud-deploy.md).
+3. Live LLM testing on real providers: DONE via POST /api/llm/test (route,
+   validation call) — still needs a real-key end-to-end run against OpenAI/
+   Anthropic before shipping the hosted plans.
 4. NativeCore smoke tests (src/native/win32) on a real machine; CI story for
    Windows runners (build + tests + lint in GitHub Actions).
-5. MCP connectors: define real endpoints in config.mcp.connectors; credentials
-   flow through CredentialVault (vault.bin is HWID-bound, never commit it).
+5. MCP connectors: DONE — catalog + vault-backed connect flow + POST
+   /api/mcp/connect; each connector still needs a real endpoint/key entered
+   by the user (no bundled endpoints).
 6. Mesh (Rust): wire umbra-mesh encrypted channel as an alternative to the ws
    relay in P2PConnectionManager.
-7. Video production: OpenMontage tool registry lives in external/OpenMontage
-   (cloned separately; repo excludes external/ — see .gitignore).
+7. Video production: DONE — OpenMontage tools are auto-discovered from
+   external/OpenMontage and exposed as native MCP tools + an API listing.
 
 CONVENTIONS
 -----------

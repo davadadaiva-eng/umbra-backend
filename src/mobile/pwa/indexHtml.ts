@@ -57,6 +57,7 @@ img#live{width:100%;border-radius:10px;background:#000;display:block}
     <div class="row">
       <button id="scanBtn">Scan QR</button>
       <button class="secondary" id="pasteBtn">Paste payload</button>
+      <button class="secondary" id="autoPairBtn">Auto-pair</button>
     </div>
     <div id="scanBox" class="hidden"><video id="scanner" playsinline muted></video></div>
     <div id="pasteBox" class="hidden" style="margin-top:10px">
@@ -67,6 +68,16 @@ img#live{width:100%;border-radius:10px;background:#000;display:block}
       <input type="text" id="deviceName" placeholder="Device name (e.g. Pixel 9)" value="Phone"/>
     </div>
     <div id="pairingErr" class="muted" style="color:#e5484d;margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Ask Umbra</h2>
+    <textarea id="chatInput" placeholder="Type or speak a task — Umbra runs it in the cloud, on your connectors, or on your PC if it’s on…"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="btnAsk">Send</button>
+      <button class="secondary" id="btnMic">🎤 Speak</button>
+    </div>
+    <div class="muted" style="margin-top:6px">Routed automatically: cloud agents, connected devices, or your PC.</div>
   </div>
 
   <div class="card" id="viewCard" style="display:none">
@@ -184,6 +195,17 @@ function stopScanner(){
 }
 document.getElementById('pasteBtn').addEventListener('click', function(){
   document.getElementById('pasteBox').classList.toggle('hidden');
+});
+document.getElementById('autoPairBtn').addEventListener('click', function(){
+  // Same-origin: the PWA is served from the PC, so this works over plain
+  // HTTP on the LAN — no camera, no secure-context requirement, no paste.
+  log('Fetching pairing payload from the PC…');
+  fetch('/api/pairing', {method:'POST'}).then(function(r){ return r.json(); }).then(function(j){
+    if (!j.payload){ throw new Error('no payload'); }
+    connectFromPayload(JSON.stringify(j.payload));
+  }).catch(function(e){
+    log('Auto-pair failed: ' + e.message + ' — scan the QR or paste instead.');
+  });
 });
 document.getElementById('payloadOk').addEventListener('click', function(){
   var raw = document.getElementById('payloadInput').value.trim();
@@ -332,6 +354,44 @@ function command(action, params){
     sendEnc({t:'cmd', action: action, params: params || {}, reqId: reqId});
   });
 }
+
+// ── Ask Umbra (text + speech) ───────────────────────────────
+var chatInput = document.getElementById('chatInput');
+function askUmbra(desc){
+  if (!desc) return;
+  log('Asking Umbra: ' + desc);
+  fetch('/api/chat', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({message: desc})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      var d = j.dispatch || j;
+      log('DISPATCH → target=' + d.target + ' taskId=' + d.taskId);
+      chatInput.value = '';
+    })
+    .catch(function(){
+      // PWA served from the PC: fall back to the encrypted command channel.
+      command('submitTask', {description: desc}).then(function(){ chatInput.value = ''; });
+    });
+}
+document.getElementById('btnAsk').addEventListener('click', function(){ askUmbra(chatInput.value.trim()); });
+
+var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+var recorder = null;
+document.getElementById('btnMic').addEventListener('click', function(){
+  if (!SpeechRec){ log('Speech recognition not supported in this browser.'); return; }
+  if (!recorder){
+    recorder = new SpeechRec();
+    recorder.lang = 'en-US';
+    recorder.interimResults = true;
+    recorder.onresult = function(e){
+      var t = '';
+      for (var i = 0; i < e.results.length; i++){ t += e.results[i][0].transcript; }
+      chatInput.value = t;
+    };
+    recorder.onend = function(){ log('Speech finished'); };
+    recorder.onerror = function(e){ log('Mic error: ' + e.error); };
+  }
+  try { recorder.start(); log('Listening…'); } catch(e){ log('Mic error: ' + e.message); }
+});
 
 // ── WebRTC attempt (data channel path, falls back to relay) ─
 function tryWebRTC(stunServers){

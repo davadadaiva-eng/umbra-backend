@@ -25,8 +25,36 @@ function makeDeps() {
     getMcpCatalog: async () => ({ count: 2, active: 0, entries: [] }),
     connectMcp: async (id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }) => ({ id, ...opts }),
     syncExternalConnectors: async () => ({ registered: 3, sources: ['smithery'], errors: [] }),
+    getModelStatus: async () => ({
+      provider: 'ollama',
+      plan: 'pro',
+      monthlyPriceUsd: 19,
+      budget: { monthlyBudgetUsd: 5, spentUsd: 0.5, remainingUsd: 4.5, slotBudgets: { fast: 1, reasoning: 1, frontend: 1, difficult: 2 }, spentBySlot: { fast: 0.2, reasoning: 0.2, frontend: 0, difficult: 0.1 } },
+      routing: { enabled: true, optimizations: { promptCaching: true, cacheHitRatio: 0.85, graphify: true, caveman: true }, maxOutputTokens: 800, tiers: {} },
+      plans: [{ tier: 'pro', name: 'Pro', priceUsd: 19, budgetUsd: 5 }],
+    }),
+    testLlm: async () => ({ ok: true, model: 'test-fast', tokens: 30, latencyMs: 5 }),
+    configureProvider: async (patch: Record<string, unknown>) => ({ applied: patch }),
+    activatePlan: async (tier: string) => ({ plan: tier, budget: { monthlyBudgetUsd: 5, slotBudgets: { fast: 1, reasoning: 1, frontend: 1, difficult: 2 } } }),
+    getProviderConfig: async () => ({ provider: 'openai', keys: { openai: '••••abcd' } }),
+    listOpenMontageTools: async () => ({ installed: true, count: 2, tools: [{ name: 'video_compose' }, { name: 'piper_tts' }] }),
+    generateImage: async (prompt: string) => ({ imagePath: `/tmp/${prompt.toLowerCase().replace(/\s+/g, '-')}.png`, provider: 'huggingface', model: 'FLUX.1-schnell' }),
+    recallMemory: async (query: string) => ({ query, facts: [{ text: 'user prefers dark mode' }], similar: [{ text: 'built the routing engine', distance: 0.1 }], recent: [{ description: 'routing', status: 'completed' }] }),
+    rememberMemory: async (text: string) => ({ id: 1, remembered: text, total: 1 }),
     delegateHermes: async (description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }) => ({ description, ...opts }),
     generateJournalNow: async () => ({ ok: true }),
+    mcpHandle: async (message: Record<string, unknown>) => {
+      if (message.method === 'initialize') {
+        return { jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'umbra', version: '0.1.0' } } };
+      }
+      if (message.method === 'tools/list') {
+        return { jsonrpc: '2.0', id: message.id, result: { tools: [{ name: 'communication-slack.invoke', description: 'Connector tool', inputSchema: { type: 'object', properties: {} } }] } };
+      }
+      if (message.method === 'tools/call') {
+        return { jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: 'sent' }], isError: false } };
+      }
+      return null;
+    },
   };
 }
 
@@ -138,6 +166,91 @@ describe('ApiServer', () => {
     expect(res.json.sync.sources).toContain('smithery');
   });
 
+  test('llm models returns budget + routing status', async () => {
+    const res = await api('/api/llm/models');
+    expect(res.status).toBe(200);
+    expect(res.json.plan).toBe('pro');
+    expect(res.json.monthlyPriceUsd).toBe(19);
+    expect(res.json.budget.monthlyBudgetUsd).toBe(5);
+    expect(res.json.budget.slotBudgets.difficult).toBe(2);
+    expect(res.json.budget.slotBudgets.fast).toBe(1);
+    expect(res.json.routing.optimizations.cacheHitRatio).toBe(0.85);
+    expect(res.json.routing.optimizations.graphify).toBe(true);
+    expect(res.json.routing.maxOutputTokens).toBe(800);
+  });
+
+  test('llm test runs a live validation call', async () => {
+    const res = await api('/api/llm/test', 'POST');
+    expect(res.status).toBe(200);
+    expect(res.json.ok).toBe(true);
+    expect(res.json.model).toBe('test-fast');
+  });
+
+  test('provider config get masks keys', async () => {
+    const res = await api('/api/config/provider');
+    expect(res.status).toBe(200);
+    expect(res.json.keys.openai).toBe('••••abcd');
+  });
+
+  test('provider config set applies patch', async () => {
+    const res = await api('/api/config/provider', 'POST', { provider: 'openai', apiKey: 'sk-123', tier: 'pro' });
+    expect(res.status).toBe(200);
+    expect(res.json.applied.provider).toBe('openai');
+    expect(res.json.applied.apiKey).toBe('sk-123');
+  });
+
+  test('plan activate assigns the token budget after payment', async () => {
+    const res = await api('/api/plan/activate', 'POST', { tier: 'pro' });
+    expect(res.status).toBe(200);
+    expect(res.json.plan).toBe('pro');
+    expect(res.json.budget.monthlyBudgetUsd).toBe(5);
+    expect(res.json.budget.slotBudgets.difficult).toBe(2);
+  });
+
+  test('plan activate requires a tier', async () => {
+    const res = await api('/api/plan/activate', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('openmontage tools lists the registry', async () => {
+    const res = await api('/api/openmontage/tools');
+    expect(res.status).toBe(200);
+    expect(res.json.openmontage.installed).toBe(true);
+    expect(res.json.openmontage.count).toBe(2);
+  });
+
+  test('image generate dispatches Flux Schnell', async () => {
+    const res = await api('/api/image/generate', 'POST', { prompt: 'a neon fox', width: 1024, height: 1024 });
+    expect(res.status).toBe(200);
+    expect(res.json.image.model).toBe('FLUX.1-schnell');
+    expect(res.json.image.imagePath).toContain('a-neon-fox');
+  });
+
+  test('image generate requires a prompt', async () => {
+    const res = await api('/api/image/generate', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('memory recall returns past sessions + user facts', async () => {
+    const res = await api('/api/memory/recall?q=routing');
+    expect(res.status).toBe(200);
+    expect(res.json.facts[0].text).toBe('user prefers dark mode');
+    expect(res.json.similar[0].text).toBe('built the routing engine');
+    expect(res.json.recent[0].status).toBe('completed');
+  });
+
+  test('memory remember stores a permanent user fact', async () => {
+    const res = await api('/api/memory/remember', 'POST', { text: 'my name is Alex' });
+    expect(res.status).toBe(200);
+    expect(res.json.remembered).toBe('my name is Alex');
+    expect(res.json.total).toBe(1);
+  });
+
+  test('memory remember requires text', async () => {
+    const res = await api('/api/memory/remember', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
   test('agent delegate requires description', async () => {
     const res = await api('/api/agent/delegate', 'POST', {});
     expect(res.status).toBe(500);
@@ -162,5 +275,49 @@ describe('ApiServer', () => {
       body: '{bad json',
     });
     expect(res.status).toBe(500);
+  });
+
+  test('mcp initialize handshake', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } }),
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.result.protocolVersion).toBe('2025-03-26');
+    expect(json.result.serverInfo.name).toBe('umbra');
+  });
+
+  test('mcp tools/list returns registered connectors', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.result.tools).toContainEqual(expect.objectContaining({ name: 'communication-slack.invoke' }));
+  });
+
+  test('mcp tools/call dispatches a connector', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'communication-slack.invoke', arguments: { channel: '#general', text: 'hi' } } }),
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as any;
+    expect(json.result.content[0].text).toBe('sent');
+    expect(json.result.isError).toBe(false);
+  });
+
+  test('mcp notifications answer 202 with no body', async () => {
+    const res = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+    expect(res.status).toBe(202);
   });
 });

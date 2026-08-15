@@ -24,17 +24,25 @@ export interface RouterOptions {
   connector?: McpHttpConnector;
   /** Native handler resolver (skill → (input) => output). */
   nativeHandlers?: Map<string, (input: Record<string, unknown>) => unknown>;
+  /**
+   * Fallback resolver consulted when a native binding has no map entry — lets
+   * dynamically-registered tools (e.g. OpenMontage) dispatch without a
+   * pre-populated handler map.
+   */
+  nativeResolver?: (binding: McpToolBinding) => ((input: Record<string, unknown>) => unknown) | undefined;
 }
 
 export class McpRouter {
   private registry: McpRegistry;
   private connector?: McpHttpConnector;
   private nativeHandlers: Map<string, (input: Record<string, unknown>) => unknown>;
+  private nativeResolver?: (binding: McpToolBinding) => ((input: Record<string, unknown>) => unknown) | undefined;
 
   constructor(registry: McpRegistry, options: RouterOptions = {}) {
     this.registry = registry;
     this.connector = options.connector;
     this.nativeHandlers = options.nativeHandlers ?? new Map();
+    this.nativeResolver = options.nativeResolver;
   }
 
   async call(skill: string, tool: string, input: Record<string, unknown>): Promise<McpCallResult> {
@@ -60,7 +68,7 @@ export class McpRouter {
   private async dispatch(binding: McpToolBinding, input: Record<string, unknown>): Promise<unknown> {
     switch (binding.transport) {
       case 'native': {
-        const handler = this.nativeHandlers.get(binding.key);
+        const handler = this.nativeHandlers.get(binding.key) ?? this.nativeResolver?.(binding);
         if (!handler) throw new Error(`No native handler for ${binding.key}`);
         return handler(input);
       }

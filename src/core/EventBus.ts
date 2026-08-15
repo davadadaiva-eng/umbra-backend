@@ -24,6 +24,10 @@ export type UmbraEvents = {
   'overlay:command': (command: string) => void;
   'stream:started': () => void;
   'stream:stopped': () => void;
+  'screen:update': (payload: Record<string, unknown>) => void;
+  'screen:cursor': (payload: { x: number; y: number }) => void;
+  'meeting:order': (payload: Record<string, unknown>) => void;
+  'meeting:transcript': (payload: Record<string, unknown>) => void;
 };
 
 export class EventBus {

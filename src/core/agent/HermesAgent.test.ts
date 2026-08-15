@@ -48,4 +48,79 @@ describe('HermesAgentBridge', () => {
     expect(res.timedOut).toBe(true);
     expect(res.ok).toBe(false);
   });
+
+  it('registers the MCP bridge by writing the umbra server into the agent config', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'umbra-hermes-home-'));
+    const bridge = new HermesAgentBridge({ bin: fakeBin, hermesHome: home });
+    const ok = await bridge.registerMcpBridge('http://127.0.0.1:8787/mcp');
+    expect(ok).toBe(true);
+    const config = fs.readFileSync(path.join(home, 'config.yaml'), 'utf-8');
+    expect(config).toContain('mcp_servers:');
+    expect(config).toContain('umbra:');
+    expect(config).toContain('url: http://127.0.0.1:8787/mcp');
+  });
+
+  it('skips registration when umbra is already configured', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'umbra-hermes-home-'));
+    fs.writeFileSync(
+      path.join(home, 'config.yaml'),
+      '# my config\r\nmcp_servers:\r\n  umbra:\r\n    url: http://127.0.0.1:8787/mcp\r\n  other:\r\n    url: http://x/mcp\r\n',
+      'utf-8',
+    );
+    const before = fs.readFileSync(path.join(home, 'config.yaml'), 'utf-8');
+    const bridge = new HermesAgentBridge({ bin: fakeBin, hermesHome: home });
+    const ok = await bridge.registerMcpBridge('http://127.0.0.1:9999/mcp');
+    expect(ok).toBe(true);
+    // Existing config untouched; the original URL is preserved.
+    expect(fs.readFileSync(path.join(home, 'config.yaml'), 'utf-8')).toBe(before);
+  });
+
+  it('adds umbra to an existing mcp_servers section', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'umbra-hermes-home-'));
+    fs.writeFileSync(
+      path.join(home, 'config.yaml'),
+      'mcp_servers:\r\n  other:\r\n    url: http://x/mcp\r\nmodel:\r\n  default: x\r\n',
+      'utf-8',
+    );
+    const bridge = new HermesAgentBridge({ bin: fakeBin, hermesHome: home });
+    const ok = await bridge.registerMcpBridge('http://127.0.0.1:8787/mcp');
+    expect(ok).toBe(true);
+    const config = fs.readFileSync(path.join(home, 'config.yaml'), 'utf-8');
+    expect(config).toContain('other:');
+    expect(config).toContain('umbra:');
+    expect(config).toContain('url: http://127.0.0.1:8787/mcp');
+  });
+
+  it('returns false when the engine is not installed', async () => {
+    const bridge = new HermesAgentBridge({ bin: 'definitely-not-a-real-hermes-bin' });
+    expect(await bridge.registerMcpBridge('http://127.0.0.1:8787/mcp')).toBe(false);
+  });
+
+  it('provisions provider keys into the engine .env', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'umbra-hermes-home-'));
+    const bridge = new HermesAgentBridge({ bin: fakeBin, hermesHome: home });
+    const ok = await bridge.syncProviderCredentials({ OPENAI_API_KEY: 'sk-test-123' });
+    expect(ok).toBe(true);
+    const env = fs.readFileSync(path.join(home, '.env'), 'utf-8');
+    expect(env).toContain('OPENAI_API_KEY=sk-test-123');
+  });
+
+  it('upserts an existing key without duplicating lines', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'umbra-hermes-home-'));
+    fs.writeFileSync(path.join(home, '.env'), '# engine env\r\nOPENAI_API_KEY=old\r\nOTHER=keep\r\n', 'utf-8');
+    const bridge = new HermesAgentBridge({ bin: fakeBin, hermesHome: home });
+    await bridge.syncProviderCredentials({ OPENAI_API_KEY: 'sk-new-456' });
+    const env = fs.readFileSync(path.join(home, '.env'), 'utf-8');
+    expect(env).toContain('OPENAI_API_KEY=sk-new-456');
+    expect(env).toContain('OTHER=keep');
+    expect(env.match(/OPENAI_API_KEY=/g)).toHaveLength(1);
+  });
+
+  it('ignores empty credential values', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'umbra-hermes-home-'));
+    const bridge = new HermesAgentBridge({ bin: fakeBin, hermesHome: home });
+    const ok = await bridge.syncProviderCredentials({ OPENAI_API_KEY: '  ' });
+    expect(ok).toBe(true);
+    expect(fs.existsSync(path.join(home, '.env'))).toBe(false);
+  });
 });

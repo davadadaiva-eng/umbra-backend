@@ -37,6 +37,7 @@ type Row = [
   kind: 'verified' | 'template',
   description: string,
   docs?: string,
+  tool?: string,
 ];
 
 function slug(s: string): string {
@@ -44,7 +45,7 @@ function slug(s: string): string {
 }
 
 function build(category: string, rows: Row[]): McpCatalogEntry[] {
-  return rows.map(([name, baseUrl, auth, header, credentialKey, kind, description, docs]) => ({
+  return rows.map(([name, baseUrl, auth, header, credentialKey, kind, description, docs, tool]) => ({
     id: `${slug(category)}-${slug(name)}`,
     name,
     category,
@@ -56,6 +57,7 @@ function build(category: string, rows: Row[]): McpCatalogEntry[] {
     enabled: false,
     description,
     docs,
+    tool,
   }));
 }
 
@@ -159,6 +161,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     ['ArXiv', '', 'none', undefined, undefined, 'verified', 'Search and retrieve papers from arXiv.'],
     ['PubMed', '', 'none', undefined, undefined, 'verified', 'Search biomedical literature via PubMed.'],
     ['Wikipedia', '', 'none', undefined, undefined, 'verified', 'Article summaries, links, and search from Wikipedia.'],
+    ['DeepWiki', 'https://mcp.deepwiki.com/mcp', 'none', undefined, undefined, 'verified', 'AI-generated documentation and Q&A for any GitHub repository (public MCP endpoint, no auth).', 'https://deepwiki.com', 'ask_question'],
     ['NewsAPI', '', 'apiKey', 'X-Api-Key', 'newsapi', 'verified', 'Live headlines and articles from NewsAPI.org.'],
     ['Crossref', '', 'none', undefined, undefined, 'verified', 'Scholarly metadata and DOI resolution via Crossref.'],
     ['Semantic Scholar', '', 'apiKey', 'X-API-Key', 'semantic-scholar', 'verified', 'Paper search, citations, and embeddings by topic.'],
