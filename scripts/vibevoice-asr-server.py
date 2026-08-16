@@ -7,8 +7,13 @@ be transcribed chunk-by-chunk without re-loading the model (7B) every time.
 The model jointly performs ASR + speaker diarization + timestamping, returning
 "who said what and when".
 
+The HTTP API comes up *immediately*; the model (and its ~17 GB download on
+first run) is loaded in a background thread, so /health always answers and
+reports progress instead of hanging during the multi-hour first download.
+
 Endpoints:
-  GET  /health      -> {"ok": bool, "model": str, "device": str}
+  GET  /health      -> {"ok": bool, "state": "loading|ready|error",
+                        "model": str, "device": str}
   POST /transcribe  -> multipart: "audio" (wav/mp3/...), "context" (hotwords)
                        -> {"segments": [{speaker_id, start_time, end_time, text}],
                            "raw_text": str}
@@ -21,17 +26,28 @@ pre-download them with `npm run vibevoice:asr-download`.
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
-import re
+import threading
 from pathlib import Path
 
+# Force the plain sequential HTTP downloader before anything touches the Hub;
+# the parallel/Xet downloaders stall on slow links. The ASR downloader module
+# (imported below) sets the same defaults and provides the reliable fetch loop.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+
 REPO = Path(__file__).resolve().parents[1] / "external" / "VibeVoice"
+SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "demo"))
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 from fastapi import FastAPI, File, Form, UploadFile  # noqa: E402
 import uvicorn  # noqa: E402
+
+from vibevoice_asr_download import download_all  # noqa: E402
 
 app = FastAPI(title="VibeVoice-ASR for Umbra OS")
 
@@ -39,11 +55,13 @@ STATE = {
     "model_path": "microsoft/VibeVoice-ASR",
     "device": "auto",
     "max_new_tokens": 4096,
-    "loaded": False,
+    "state": "loading",
     "processor": None,
     "model": None,
     "run_device": "auto",
+    "error": None,
 }
+_LOCK = threading.Lock()
 
 
 def fallback_normalize(raw_text: str):
@@ -83,6 +101,12 @@ def load_model():
     from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration
     from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
 
+    # Ensure all weights are cached (idempotent, resumable) before from_pretrained,
+    # which would otherwise use the stalling parallel downloader.
+    if STATE["model_path"] == "microsoft/VibeVoice-ASR":
+        print("[vibevoice-asr] ensuring model is cached (sequential download)", flush=True)
+        download_all()
+
     print(f"[vibevoice-asr] loading processor + model from {STATE['model_path']}", flush=True)
     processor = VibeVoiceASRProcessor.from_pretrained(
         STATE["model_path"], language_model_pretrained_name="Qwen/Qwen2.5-7B"
@@ -108,9 +132,10 @@ def load_model():
 def transcribe_file(audio_path: str, context: str):
     import torch
 
-    processor = STATE["processor"]
-    model = STATE["model"]
-    device = STATE["run_device"]
+    with _LOCK:
+        processor = STATE["processor"]
+        model = STATE["model"]
+        device = STATE["run_device"]
 
     inputs = processor(
         audio=audio_path,
@@ -142,16 +167,18 @@ def transcribe_file(audio_path: str, context: str):
 @app.get("/health")
 def health():
     return {
-        "ok": STATE["loaded"],
+        "ok": STATE["state"] == "ready",
+        "state": STATE["state"],
         "model": STATE["model_path"],
-        "device": STATE["run_device"] if STATE["loaded"] else STATE["device"],
+        "device": STATE["run_device"] if STATE["state"] == "ready" else STATE["device"],
+        "error": STATE["error"],
     }
 
 
 @app.post("/transcribe")
 async def transcribe_endpoint(audio: UploadFile = File(...), context: str = Form("")):
-    if not STATE["loaded"]:
-        return {"error": "model not loaded yet"}
+    if STATE["state"] != "ready":
+        return {"error": f"model not ready (state: {STATE['state']})", "segments": [], "raw_text": ""}
 
     suffix = os.path.splitext(audio.filename or "audio.wav")[1] or ".wav"
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
@@ -161,12 +188,29 @@ async def transcribe_endpoint(audio: UploadFile = File(...), context: str = Form
         raw_text, segments = transcribe_file(tmp_path, context or "")
         return {"segments": segments, "raw_text": raw_text}
     except Exception as e:
-        return {"error": str(e)[:500]}
+        return {"error": str(e)[:500], "segments": [], "raw_text": ""}
     finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def _load_worker():
+    try:
+        processor, model, run_device = load_model()
+        with _LOCK:
+            STATE["processor"] = processor
+            STATE["model"] = model
+            STATE["run_device"] = run_device
+            STATE["state"] = "ready"
+    except Exception as e:  # noqa: BLE001
+        import traceback
+
+        traceback.print_exc()
+        with _LOCK:
+            STATE["state"] = "error"
+            STATE["error"] = f"{type(e).__name__}: {e}"
 
 
 def main():
@@ -182,8 +226,9 @@ def main():
     STATE["device"] = args.device
     STATE["max_new_tokens"] = args.max_new_tokens
 
-    STATE["processor"], STATE["model"], STATE["run_device"] = load_model()
-    STATE["loaded"] = True
+    # Serve the API immediately; load the model in the background so /health
+    # answers during the (potentially multi-hour) first download.
+    threading.Thread(target=_load_worker, daemon=True, name="vibevoice-asr-loader").start()
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

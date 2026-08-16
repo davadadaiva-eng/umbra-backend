@@ -14,18 +14,25 @@ Run from the VibeVoice venv:
     ./.venv/Scripts/python.exe ../../scripts/vibevoice-asr-download.py
 
 When it prints "DONE", the model is cached and `npm run vibevoice:asr-server`
-will load it without re-downloading.
+will load it without re-downloading. The ASR server also imports `download_all`
+so its background loader pre-fetches the model with this same reliable path.
 """
 import os
 import sys
 import time
 
-from huggingface_hub import hf_hub_download
+# Force the plain HTTP downloader before anything touches the Hub: the
+# parallel and Xet downloaders stall on slow links, but sequential HTTP
+# downloads reliably and resumes from .incomplete blobs.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+
+from huggingface_hub import hf_hub_download  # noqa: E402
 
 REPO = "microsoft/VibeVoice-ASR"
 
 # Order matters: config + index first (cheap, needed to even know the shards),
-# then shards largest-last so the most likely-to-be-interrupted work resumes.
+# then shards in order so the most likely-to-be-interrupted work resumes.
 FILES = [
     "config.json",
     "model.safetensors.index.json",
@@ -40,18 +47,28 @@ FILES = [
 ]
 
 
-def main() -> int:
-    start = time.time()
+def download_all() -> None:
+    """Fetch every required file sequentially; safe to call repeatedly.
+
+    Already-cached files are skipped instantly (huggingface_hub returns the
+    cached blob without a network round-trip), and interrupted downloads
+    resume from their .incomplete blobs.
+    """
     for i, fname in enumerate(FILES, 1):
         t0 = time.time()
-        try:
-            path = hf_hub_download(REPO, fname)
-        except KeyboardInterrupt:
-            print(f"[{i}/{len(FILES)}] interrupted during {fname} — resume by re-running", flush=True)
-            return 130
+        path = hf_hub_download(REPO, fname)
         mb = os.path.getsize(path) / 1e6
-        print(f"[{i}/{len(FILES)}] {fname}: {mb:.0f} MB in {time.time()-t0:.0f}s", flush=True)
+        print(f"[asr-download {i}/{len(FILES)}] {fname}: {mb:.0f} MB in {time.time()-t0:.0f}s", flush=True)
+    print(f"[asr-download] all {len(FILES)} files cached", flush=True)
 
+
+def main() -> int:
+    start = time.time()
+    try:
+        download_all()
+    except KeyboardInterrupt:
+        print("Interrupted — re-run to resume from cached blobs.", flush=True)
+        return 130
     print(f"DONE: all {len(FILES)} files cached in {time.time()-start:.0f}s", flush=True)
     print("The model is now cached under the Hugging Face cache dir; ", flush=True)
     print(f"`npm run vibevoice:asr-server` will load {REPO} without re-downloading.", flush=True)

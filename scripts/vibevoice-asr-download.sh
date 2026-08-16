@@ -32,4 +32,4 @@ export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTHONIOENCODING=utf-8
 
-exec python "$SCRIPT_DIR/vibevoice-asr-download.py" "$@"
+exec python "$SCRIPT_DIR/vibevoice_asr_download.py" "$@"
