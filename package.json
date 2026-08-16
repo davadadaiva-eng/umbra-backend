@@ -13,7 +13,10 @@
     "vibevoice:install": "bash scripts/vibevoice-install.sh",
     "vibevoice:asr-download": "bash scripts/vibevoice-asr-download.sh",
     "vibevoice:asr-server": "bash scripts/vibevoice-asr-server.sh",
-    "vibevoice:asr-transcribe": "bash scripts/vibevoice-asr-transcribe.sh"
+    "vibevoice:asr-transcribe": "bash scripts/vibevoice-asr-transcribe.sh",
+    "whisper:asr-server": "bash scripts/whisper-asr-server.sh",
+    "whisper:asr-transcribe": "bash scripts/whisper-asr-transcribe.sh",
+    "whisper:model-download": "bash scripts/whisper-model-download.sh"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

@@ -271,15 +271,20 @@ export interface UmbraConfig {
     voiceboxEngine?: string;
     /**
      * Meeting diarization: 'none' | 'vibevoice' (microsoft/VibeVoice-ASR —
-     * who/when/what speaker labels). Runs against scripts/vibevoice-asr-server.
+     * who/when/what speaker labels, ~17 GB) | 'whisper' (faster-whisper small
+     * + ECAPA embeddings, ~520 MB, fully ungated — the lightweight default).
      */
-    asrProvider?: 'none' | 'vibevoice';
+    asrProvider?: 'none' | 'vibevoice' | 'whisper';
     /** VibeVoice-ASR diarization server URL. */
     vibevoiceAsrUrl?: string;
     /** VibeVoice-ASR model id/path (default microsoft/VibeVoice-ASR). */
     vibevoiceAsrModel?: string;
     /** Freeform context/hotwords for diarization (speaker names, jargon, topics). */
     vibevoiceAsrContext?: string;
+    /** Whisper-ASR diarization server URL (default http://127.0.0.1:17501). */
+    whisperAsrUrl?: string;
+    /** faster-whisper model id (default 'small'). */
+    whisperAsrModel?: string;
   };
   hermes: {
     enabled: boolean;

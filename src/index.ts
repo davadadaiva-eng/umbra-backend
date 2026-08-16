@@ -51,6 +51,7 @@ import { WindowsTts } from './core/audio/WindowsTts';
 import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
 import { VoiceboxClient } from './core/voice/VoiceboxClient';
 import { VibeVoiceAsr } from './core/voice/VibeVoiceAsr';
+import { WhisperAsr } from './core/voice/WhisperAsr';
 import { VoiceStackHealth } from './core/voice/VoiceStackHealth';
 import { LoopbackRecorder } from './core/audio/LoopbackRecorder';
 import { AudioRouter, findCable } from './core/audio/AudioRouter';
@@ -152,6 +153,7 @@ export class UmbraOS {
   private vibeVoiceTts?: VibeVoiceTts;
   private voiceboxClient?: VoiceboxClient;
   private vibeVoiceAsr?: VibeVoiceAsr;
+  private whisperAsr?: WhisperAsr;
   private voiceStackHealth?: VoiceStackHealth;
   private awareness?: ScreenAwareness;
   private telnyx!: TelnyxClient;
@@ -357,6 +359,7 @@ export class UmbraOS {
     });
     this.voiceboxClient = new VoiceboxClient({ baseUrl: config.voice.voiceboxUrl });
     this.vibeVoiceAsr = new VibeVoiceAsr({ baseUrl: config.voice.vibevoiceAsrUrl });
+    this.whisperAsr = new WhisperAsr({ baseUrl: config.voice.whisperAsrUrl });
     if (!this.openmontage.isInstalled()) {
       getLogger().warn('OpenMontage not installed — video production disabled (external/OpenMontage)');
     }
@@ -710,9 +713,17 @@ export class UmbraOS {
               },
             }
           : undefined,
-        diarize: config.voice.asrProvider === 'vibevoice'
+        diarize: config.voice.asrProvider === 'vibevoice' || config.voice.asrProvider === 'whisper'
           ? {
               transcribe: async (audio: Buffer, _format?: string) => {
+                if (config.voice.asrProvider === 'whisper') {
+                  if (!this.whisperAsr || !(await this.whisperAsr.isRunning())) {
+                    throw new Error('Whisper-ASR server not running — start it with `npm run whisper:asr-server`');
+                  }
+                  return this.whisperAsr.transcribe(audio, {
+                    context: this.configManager.raw.voice.vibevoiceAsrContext || undefined,
+                  });
+                }
                 if (!this.vibeVoiceAsr || !(await this.vibeVoiceAsr.isRunning())) {
                   throw new Error('VibeVoice-ASR server not running — start it with `npm run vibevoice:asr-server`');
                 }
@@ -807,6 +818,20 @@ export class UmbraOS {
             return { ok: false, error: `Unknown TTS provider: ${tts}` };
           },
           asr: async () => {
+            const provider = config.voice.asrProvider ?? 'none';
+            if (provider === 'whisper') {
+              const health = this.whisperAsr ? await this.whisperAsr.health().catch(() => null) : null;
+              if (!health) {
+                return { ok: false, error: 'Whisper-ASR not running — start `npm run whisper:asr-server`' };
+              }
+              if (health.state === 'loading') {
+                return { ok: false, status: 'degraded', detail: 'Whisper-ASR loading — model downloading/loading (first run ~520 MB)' };
+              }
+              if (health.state === 'error') {
+                return { ok: false, error: `Whisper-ASR failed to load: ${health.error ?? 'unknown error'}` };
+              }
+              return { ok: true, detail: `Whisper-ASR ready on ${health.device ?? 'auto'}` };
+            }
             const health = this.vibeVoiceAsr ? await this.vibeVoiceAsr.health().catch(() => null) : null;
             if (!health) {
               return { ok: false, error: 'VibeVoice-ASR not running — start `npm run vibevoice:asr-server`' };
@@ -1347,15 +1372,17 @@ export class UmbraOS {
   // ── Voice-to-text (STT) ───────────────────────────────────
 
   async getVoiceStatus(): Promise<any> {
-    const asrHealth = this.vibeVoiceAsr ? await this.vibeVoiceAsr.health().catch(() => null) : null;
+    const asrProvider = this.configManager.raw.voice.asrProvider ?? 'none';
+    const asrClient = asrProvider === 'whisper' ? this.whisperAsr : this.vibeVoiceAsr;
+    const asrHealth = asrClient ? await asrClient.health().catch(() => null) : null;
     return {
       enabled: this.speechToText?.available ?? false,
       provider: this.speechToText?.provider ?? 'none',
       model: this.configManager.raw.voice.sttModel,
       asr: {
-        provider: this.configManager.raw.voice.asrProvider ?? 'none',
-        url: this.configManager.raw.voice.vibevoiceAsrUrl,
-        model: this.configManager.raw.voice.vibevoiceAsrModel,
+        provider: asrProvider,
+        url: asrProvider === 'whisper' ? this.configManager.raw.voice.whisperAsrUrl : this.configManager.raw.voice.vibevoiceAsrUrl,
+        model: asrProvider === 'whisper' ? this.configManager.raw.voice.whisperAsrModel : this.configManager.raw.voice.vibevoiceAsrModel,
         ...(asrHealth
           ? {
               ok: asrHealth.ok,

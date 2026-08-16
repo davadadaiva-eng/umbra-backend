@@ -72,7 +72,7 @@ export class VibeVoiceAsr {
     const res = await this.request(`${this.baseUrl}/transcribe`, { method: 'POST', body: form }, this.timeoutMs);
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`VibeVoice ASR /transcribe failed (${res.status}): ${detail.slice(0, 300)}`);
+      throw new Error(`ASR /transcribe failed (${res.status}): ${detail.slice(0, 300)}`);
     }
     const body = (await res.json()) as { segments?: unknown; error?: string };
     if (body.error) throw new Error(`VibeVoice ASR error: ${body.error}`);

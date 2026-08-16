@@ -55,7 +55,7 @@ export interface VoiceStackProbes {
 export interface VoiceStackHealthConfig {
   sttProvider: 'none' | 'openai' | 'whisper-local';
   tts: 'none' | 'local' | 'vibevoice' | 'voicebox';
-  asrProvider: 'none' | 'vibevoice';
+  asrProvider: 'none' | 'vibevoice' | 'whisper';
   audioCable: 'none' | 'auto' | string;
   loopbackEnabled: boolean;
 }

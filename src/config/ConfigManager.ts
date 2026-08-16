@@ -145,6 +145,8 @@ const DEFAULT_CONFIG: UmbraConfig = {
     vibevoiceAsrUrl: 'http://127.0.0.1:17500',
     vibevoiceAsrModel: 'microsoft/VibeVoice-ASR',
     vibevoiceAsrContext: '',
+    whisperAsrUrl: 'http://127.0.0.1:17501',
+    whisperAsrModel: 'base',
   },
   hermes: {
     enabled: true,
