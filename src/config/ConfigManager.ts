@@ -104,6 +104,7 @@ const DEFAULT_CONFIG: UmbraConfig = {
     screenShare: true,
     audioCable: 'none',
     routeMic: false,
+    nativeApp: 'auto',
   },
   awareness: {
     enabled: true,

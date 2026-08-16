@@ -210,6 +210,12 @@ export interface UmbraConfig {
     audioCable?: 'none' | 'auto' | string;
     /** When true, joining a meeting sets the default mic to the cable's output side so the call picks up Umbra automatically. */
     routeMic?: boolean;
+    /**
+     * Drive the *native* Zoom/Teams desktop app (keyboard shortcuts via
+     * SendInput) instead of / in addition to browser DOM automation.
+     * 'none' = browser only; 'auto' = detect a running app; or pin the app.
+     */
+    nativeApp?: 'none' | 'auto' | 'zoom' | 'teams';
   };
   /** Screen awareness: Umbra sees the live screen + cursor and answers questions about it. */
   awareness: {

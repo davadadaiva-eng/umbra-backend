@@ -47,6 +47,13 @@ import {
   meetingChatScript,
   ShareTarget,
 } from './core/meeting/MeetingScreenShare';
+import {
+  detectNativeMeetingApp,
+  nativeShortcut,
+  nativeProcessName,
+  NativeMeetingAction,
+} from './core/meeting/MeetingNativeControls';
+import { focusWindow, sendHotkey, getWindowRect } from './native/win32/InputNative';
 import { WindowsTts } from './core/audio/WindowsTts';
 import { VibeVoiceTts } from './core/voice/VibeVoiceTts';
 import { VoiceboxClient } from './core/voice/VoiceboxClient';
@@ -1779,12 +1786,43 @@ export class UmbraOS {
     };
   }
 
-  // ── Meeting screen-share + order helpers (best-effort DOM automation) ──
+  // ── Meeting screen-share + order helpers (DOM automation + native shortcuts) ──
+
+  /**
+   * Which native meeting app to drive, per config.meeting.nativeApp.
+   * Explicit 'zoom'/'teams' always wins; 'auto' falls back to a running app
+   * only when there is no browser meeting tab (so a stray Zoom window can't
+   * hijack controls while a Meet tab is the actual meeting).
+   */
+  private nativeMeetingApp(): 'zoom' | 'teams' | null {
+    const pref = this.configManager.raw.meeting.nativeApp ?? 'auto';
+    if (pref === 'none') return null;
+    if (pref === 'zoom' || pref === 'teams') return pref;
+    const url = this.meetingCompanion?.status()?.url || '';
+    if (url) return null; // browser meeting → DOM automation
+    return detectNativeMeetingApp(pref, proc => getWindowRect(proc) !== null);
+  }
+
+  /** Send a native-app control shortcut: focus the app window, then SendInput. */
+  private async sendNativeMeetingControl(app: 'zoom' | 'teams', action: NativeMeetingAction): Promise<string> {
+    const shortcut = nativeShortcut(app, action);
+    if (!shortcut) {
+      return `No reliable ${app} shortcut for "${action}" — use the meeting UI (e.g. click Stop Share).`;
+    }
+    const proc = nativeProcessName(app);
+    if (!focusWindow(proc)) {
+      return `Could not find a running ${app} window (${proc}) — is the app open and in the meeting?`;
+    }
+    sendHotkey(shortcut);
+    return `Sent ${app} shortcut ${shortcut} (${action})`;
+  }
 
   private async shareScreenInMeeting(target?: string): Promise<string> {
     if (this.configManager.raw.meeting.screenShare === false) {
       throw new Error('Screen sharing is disabled (meeting.screenShare)');
     }
+    const nativeApp = this.nativeMeetingApp();
+    if (nativeApp) return this.sendNativeMeetingControl(nativeApp, 'share');
     const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
     const shareTarget: ShareTarget = target === 'window' || target === 'tab' ? target : 'screen';
     try {
@@ -1798,6 +1836,8 @@ export class UmbraOS {
     if (this.configManager.raw.meeting.screenShare === false) {
       throw new Error('Screen sharing is disabled (meeting.screenShare)');
     }
+    const nativeApp = this.nativeMeetingApp();
+    if (nativeApp) return this.sendNativeMeetingControl(nativeApp, 'stopShare');
     const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
     try {
       return await this.meetingTabJs(meetingStopShareScript(provider));
@@ -1806,8 +1846,10 @@ export class UmbraOS {
     }
   }
 
-  /** Mute/unmute the mic in the meeting tab (best-effort DOM automation). */
+  /** Mute/unmute the mic (native app shortcut, else DOM automation). */
   private async controlMeetingMic(muted: boolean): Promise<string> {
+    const nativeApp = this.nativeMeetingApp();
+    if (nativeApp) return this.sendNativeMeetingControl(nativeApp, muted ? 'mute' : 'unmute');
     const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
     try {
       return await this.meetingTabJs(meetingMuteScript(provider, muted));
@@ -1816,8 +1858,10 @@ export class UmbraOS {
     }
   }
 
-  /** Raise/lower the hand in the meeting tab (best-effort DOM automation). */
+  /** Raise/lower the hand (native app shortcut, else DOM automation). */
   private async controlMeetingHand(raised: boolean): Promise<string> {
+    const nativeApp = this.nativeMeetingApp();
+    if (nativeApp) return this.sendNativeMeetingControl(nativeApp, raised ? 'raiseHand' : 'lowerHand');
     const provider = detectMeetingProvider(this.meetingCompanion?.status()?.url || '');
     try {
       return await this.meetingTabJs(meetingRaiseHandScript(provider, raised));
