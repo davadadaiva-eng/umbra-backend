@@ -98,7 +98,7 @@ export class SkillCompiler {
       })),
     };
 
-    if (this.backend && (skill.hot || !this.compileHot)) {
+    if (this.backend && skill.hot && this.compileHot) {
       skill.native = await this.backend.compile(skill, this.outDir);
     }
     return skill;

@@ -53,20 +53,6 @@ export async function captureScreenPng(): Promise<ScreenPng | null> {
   return { buffer: Buffer.from(b64Line, 'base64'), width, height, capturedAt: Date.now() };
 }
 
-const PS_CAPTURE_SCRIPT = `Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Windows.Forms
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
-$ms = New-Object System.IO.MemoryStream
-$bitmap.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-$bytes = $ms.ToArray()
-$graphics.Dispose()
-$bitmap.Dispose()
-$ms.Dispose()
-[System.Convert]::ToBase64String($bytes)`;
-
 // Captures a specific window (by process name or title) even when it lives on
 // another Windows virtual desktop or is not the foreground window.
 const PS_WINDOW_CAPTURE_SCRIPT = `$ErrorActionPreference = 'Stop'
@@ -153,18 +139,49 @@ export async function captureWindowPng(windowMatch: string): Promise<Buffer | nu
   return Buffer.from(lastLine.trim(), 'base64');
 }
 
-function runPSCapture(): Buffer | null {
-  const output = runPS(PS_CAPTURE_SCRIPT);
-  if (!output) return null;
-  const lastLine = output.split('\n').filter((l: string) => l.trim().length > 100).pop();
-  if (!lastLine) return null;
-  return Buffer.from(lastLine.trim(), 'base64');
-}
+const PS_DISPLAYS_SCRIPT = `Add-Type -AssemblyName System.Windows.Forms
+$i = 0
+foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
+  $name = if ($s.DeviceName) { $s.DeviceName } else { "DISPLAY" + ($i + 1) }
+  Write-Output ($i.ToString() + "|" + $name + "|" + $s.Bounds.Width + "|" + $s.Bounds.Height + "|" + $s.Bounds.X + "|" + $s.Bounds.Y)
+  $i++
+}`;
+
+const PS_REGION_CAPTURE_SCRIPT = `Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+$x = [int]$args[0]; $y = [int]$args[1]; $w = [int]$args[2]; $h = [int]$args[3]
+if ($w -le 0 -or $h -le 0) { exit 3 }
+$bitmap = New-Object System.Drawing.Bitmap $w, $h
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $h))
+$ms = New-Object System.IO.MemoryStream
+$bitmap.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+$bytes = $ms.ToArray()
+$graphics.Dispose()
+$bitmap.Dispose()
+$ms.Dispose()
+[System.Convert]::ToBase64String($bytes)`;
+
+const PS_JPEG_CONVERT_SCRIPT = `Add-Type -AssemblyName System.Drawing
+$b64 = $args[0]
+$quality = if ($args.Count -ge 2) { [int]$args[1] } else { 80 }
+$png = [System.Convert]::FromBase64String($b64)
+$msIn = New-Object System.IO.MemoryStream(,$png)
+$img = [System.Drawing.Image]::FromStream($msIn)
+$msOut = New-Object System.IO.MemoryStream
+$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+$ep = New-Object System.Drawing.Imaging.EncoderParameters 1
+$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [long]$quality)
+$img.Save($msOut, $enc, $ep)
+$bytes = $msOut.ToArray()
+$img.Dispose(); $msIn.Dispose(); $msOut.Dispose()
+[System.Convert]::ToBase64String($bytes)`;
 
 export async function captureDisplay(displayId: number): Promise<CaptureFrame | null> {
-  void displayId;
-  const pngBuffer = runPSCapture();
-  if (!pngBuffer) {
+  const displays = await getDisplayList();
+  const target = displays.find(d => d.id === displayId) ?? displays[0];
+  const png = await captureRegion(displayId, target?.x ?? 0, target?.y ?? 0, target?.width ?? 1920, target?.height ?? 1080);
+  if (!png) {
     if (lastCapture) {
       return {
         data: lastCapture.data,
@@ -175,37 +192,75 @@ export async function captureDisplay(displayId: number): Promise<CaptureFrame | 
     }
     return null;
   }
+  lastCapture = { data: png.data, width: png.width, height: png.height };
+  return png;
+}
 
-  const width = 1920;
-  const height = 1080;
-  lastCapture = { data: pngBuffer, width, height };
-
+export async function captureRegion(
+  displayId: number,
+  x: number, y: number, width: number, height: number,
+): Promise<CaptureFrame | null> {
+  void displayId;
+  const output = runPS(PS_REGION_CAPTURE_SCRIPT, [String(x), String(y), String(width), String(height)]);
+  if (!output) return null;
+  const lastLine = output.split('\n').filter((l: string) => l.trim().length > 100).pop();
+  if (!lastLine) return null;
+  const data = Buffer.from(lastLine.trim(), 'base64');
   return {
-    data: pngBuffer,
-    width, height,
-    stride: width * 4,
+    data,
+    width: Math.max(1, Math.floor(width)),
+    height: Math.max(1, Math.floor(height)),
+    stride: Math.max(1, Math.floor(width)) * 4,
     timestamp: Date.now(),
     format: 'png',
   };
 }
 
-export async function captureRegion(
-  displayId: number,
-  _x: number, _y: number, _width: number, _height: number,
-): Promise<CaptureFrame | null> {
-  const full = await captureDisplay(displayId);
-  if (!full) return null;
-  return full;
+export interface DisplayInfo {
+  id: number;
+  name: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  isVirtual: boolean;
 }
 
-export async function getDisplayList(): Promise<{ id: number; name: string; width: number; height: number; isVirtual: boolean }[]> {
-  return [
-    { id: 0, name: 'Primary Display', width: 1920, height: 1080, isVirtual: false },
-  ];
+export async function getDisplayList(): Promise<DisplayInfo[]> {
+  const output = runPS(PS_DISPLAYS_SCRIPT);
+  if (!output) {
+    return [{ id: 0, name: 'Primary Display', width: 1920, height: 1080, x: 0, y: 0, isVirtual: false }];
+  }
+  const displays: DisplayInfo[] = [];
+  for (const line of output.split('\n')) {
+    const parts = line.trim().split('|');
+    if (parts.length < 6) continue;
+    const id = parseInt(parts[0], 10);
+    const width = parseInt(parts[2], 10);
+    const height = parseInt(parts[3], 10);
+    const x = parseInt(parts[4], 10);
+    const y = parseInt(parts[5], 10);
+    if (isNaN(id) || isNaN(width) || isNaN(height)) continue;
+    displays.push({
+      id,
+      name: parts[1] || `Display ${id + 1}`,
+      width,
+      height,
+      x: isNaN(x) ? 0 : x,
+      y: isNaN(y) ? 0 : y,
+      isVirtual: /IDD|Indirect|Virtual|UMBRA/i.test(parts[1] || ''),
+    });
+  }
+  return displays.length ? displays : [{ id: 0, name: 'Primary Display', width: 1920, height: 1080, x: 0, y: 0, isVirtual: false }];
 }
 
-export function frameToJPEG(frame: CaptureFrame, _quality: number = 80): Buffer {
+export function frameToJPEG(frame: CaptureFrame, quality: number = 80): Buffer {
   if (frame.format === 'png') {
+    const output = runPS(PS_JPEG_CONVERT_SCRIPT, [frame.data.toString('base64'), String(quality)]);
+    if (output) {
+      const lastLine = output.split('\n').filter((l: string) => l.trim().length > 100).pop();
+      if (lastLine) return Buffer.from(lastLine.trim(), 'base64');
+    }
     return frame.data;
   }
   return frame.data;

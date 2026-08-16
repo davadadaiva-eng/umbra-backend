@@ -20,6 +20,7 @@ On first boot Umbra OS asks permission before it sends any input to the browser
 | Port | Service |
 | --- | --- |
 | 8787 | REST API + event WebSocket (`/api/ws`) — for the read-only UI |
+| 8788 | DeviceHub WebSocket (device mesh) |
 | 9090 | Live preview stream of Desktop 2 (frames + commands) |
 | 9222 | Edge/Chrome CDP (internal, Desktop 2 browser) |
 
@@ -46,6 +47,24 @@ UI contract: [`docs/ui-contract.md`](docs/ui-contract.md).
   tasks and blocks all actions at the next check.
 - **Preview stream** — the read-only UI can watch Desktop 2 live and send commands
   (consent-gated).
+- **Voice stack** — local STT/TTS/ASR via VibeVoice (voice cloning), whisper.cpp and
+  Windows SAPI; hands-free voice commands and meeting transcription. A `VoiceStackHealth`
+  probe (STT / TTS / ASR / audio cable / loopback) runs at boot and is reported in
+  `/api/status`.
+- **Meetings** — attend end-to-end: plan an agenda, live digest, action items and
+  decisions, with speaker diarization from VibeVoice-ASR ("who said what and when") plus
+  mute / raise-hand / screen-share controls.
+- **MCP registry** — a model-context-protocol registry dispatches external tools over
+  HTTP, native bindings or prompts, with vault-backed credentials; an MCP server endpoint
+  lets external agents call Umbra's connectors.
+- **P2P mesh & device pairing** — an encrypted Rust mesh daemon plus a WebSocket device
+  hub (port 8788) keeps phones/desktops connected; QR-code pairing, WebRTC streaming, and
+  a bundled PWA for phone control.
+- **Skill stack & context compression** — 20 domains × 5 skills (100 skills) route
+  intents to skill definitions; a Graphify/Caveman pipeline compresses huge context
+  (~10,000 tokens → ~300 with expandable cliques) before LLM calls.
+- **Metering & prompt caching** — every LLM call is gated behind a plan tier, a circuit
+  breaker and token accounting, with prompt caching to cut repeat-context cost.
 
 ## Configuration
 
@@ -59,7 +78,7 @@ model roles (`fast`, `vision`, `reasoning`), workspace (displays, CPU/GPU limits
 | `npm run build` | TypeScript → `dist/` |
 | `npm run dev` | ts-node live run |
 | `npm start` | Run from `dist/` |
-| `npm test` | Jest smoke tests (ConsentGate, ApiServer, WorkspaceFiles, ReposManager) |
+| `npm test` | Jest — 30 suites / 219 tests (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api) |
 | `npm run lint` | oxlint over `src/` |
 
 Integration tests (live system — build first, then `node scripts/<name>`; requires the
@@ -93,6 +112,12 @@ src/
     vault/                 — AuditVault (chained hashes + signing)
     privacy/               — PrivacyGuard (masking, block lists)
     audio/                 — NoiseCancellationEngine (gestures)
+    voice/                 — VibeVoiceTts/VibeVoiceAsr, WhisperAsr, VoiceStackHealth
+    meeting/               — MeetingAgent (agenda, digest, action items, controls)
+    mcp/                   — McpRegistry, McpRouter, McpServerEndpoint (vault-backed auth)
+    metering/              — MeteringService (tiers + circuit breaker), MeteredLLMConnector
+    skill/                 — SkillStack (100 skills), SkillRouter, SkillCompiler
+    graphify/              — Caveman/Chunker compression pipeline
   knowledge/               — KnowledgeGraph, RecallToKnowledgeBridge, journal
   mobile/PreviewStreamer.ts — ws frame stream
   native/win32/            — InputNative (SendInput via PS+C#), ScreenCaptureNative

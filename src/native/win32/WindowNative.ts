@@ -19,14 +19,34 @@ const PS_SCRIPT = `$sig = @'
 $null = Add-Type -MemberDefinition $sig -Name "Win32API" -Namespace Win32 -PassThru
 $hwnd = [Win32.Win32API]::GetForegroundWindow()
 if ($hwnd -eq [IntPtr]::Zero) { exit }
-$sb = New-Object System.Text.StringBuilder 256
-[Win32.Win32API]::GetWindowText($hwnd, $sb, 256) | Out-Null
+$sb = New-Object System.Text.StringBuilder 512
+[Win32.Win32API]::GetWindowText($hwnd, $sb, 512) | Out-Null
 $procId = 0
 [Win32.Win32API]::GetWindowThreadProcessId($hwnd, [ref]$procId) | Out-Null
 $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
 $name = if ($proc) { $proc.ProcessName } else { "" }
 $title = $sb.ToString()
-Write-Output ($name + "|" + $title)`;
+
+# Browser active-tab URL via the Chrome DevTools Protocol (best-effort;
+# requires the browser to be launched with --remote-debugging-port).
+$url = ""
+$ports = @{ chrome = 9222; msedge = 9223; brave = 9224; opera = 9225 }
+$candidates = @()
+$base = $name.ToLower()
+if ($ports.ContainsKey($base)) { $candidates += $ports[$base] }
+$candidates += 9222
+foreach ($port in ($candidates | Select-Object -Unique)) {
+  try {
+    $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2 -ErrorAction Stop
+    foreach ($t in $targets) {
+      if ($t.type -ne 'page') { continue }
+      if ($t.title -and $title -and $title.Contains($t.title)) { $url = $t.url; break }
+      if ($url -eq "") { $url = $t.url }
+    }
+    if ($url -ne "") { break }
+  } catch {}
+}
+Write-Output ($name + "|" + $title + "|" + $url)`;
 
 export interface CursorPos {
   x: number;
@@ -74,6 +94,26 @@ export function getCursorPos(): CursorPos {
   return { x: 0, y: 0 };
 }
 
+const WIN_PATH_RE = /[A-Za-z]:\\[^"<>|?*\r\n]+|\\\\[^"<>|?*\r\n]+/;
+
+/** Best-effort document path from a window title like "report.docx - Word". */
+function extractFilePath(appName: string, windowTitle: string): string | undefined {
+  const abs = windowTitle.match(WIN_PATH_RE);
+  if (abs) return abs[0].trim();
+
+  // "<name>.<ext> - <App>" / "<name> - <App>" — only meaningful for
+  // document editors, not browsers/terminals.
+  const editorHints = ['word', 'excel', 'powerpoint', 'notepad', 'notepad++', 'acrobat', 'reader', 'code', 'cursor', 'vim', 'sublime'];
+  if (!editorHints.some(h => appName.includes(h))) return undefined;
+
+  const sep = windowTitle.lastIndexOf(' - ');
+  if (sep > 0) {
+    const candidate = windowTitle.slice(0, sep).trim();
+    if (candidate && /\.[A-Za-z0-9]{1,6}$/.test(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 export function getForegroundWindowInfo(): WindowInfo {
   try {
     const tmpDir = (() => {
@@ -86,20 +126,18 @@ export function getForegroundWindowInfo(): WindowInfo {
 
     const output = execSync(
       `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${psFile}"`,
-      { timeout: 3000, encoding: 'utf-8', windowsHide: true, maxBuffer: 4096 },
+      { timeout: 4000, encoding: 'utf-8', windowsHide: true, maxBuffer: 4096 },
     ).trim();
 
     if (output) {
       const parts = output.split('|');
       if (parts.length >= 2) {
-        const appName = (parts[0] || 'unknown') + '.exe';
-        const windowTitle = parts.slice(1).join('|');
-        let url: string | undefined;
-        const base = appName.toLowerCase().replace('.exe', '');
-        if (['chrome', 'msedge', 'firefox', 'brave', 'opera'].includes(base)) {
-          url = 'https://browser-page';
-        }
-        cachedInfo = { appName, windowTitle, url };
+        const rawName = parts[0] || 'unknown';
+        const appName = rawName + '.exe';
+        const windowTitle = parts.slice(1, parts.length - 1).join('|');
+        const url = (parts[parts.length - 1] || '').trim() || undefined;
+        const filePath = extractFilePath(rawName.toLowerCase(), windowTitle);
+        cachedInfo = { appName, windowTitle, url, filePath };
       }
     }
   } catch {}

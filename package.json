@@ -16,7 +16,8 @@
     "vibevoice:asr-transcribe": "bash scripts/vibevoice-asr-transcribe.sh",
     "whisper:asr-server": "bash scripts/whisper-asr-server.sh",
     "whisper:asr-transcribe": "bash scripts/whisper-asr-transcribe.sh",
-    "whisper:model-download": "bash scripts/whisper-model-download.sh"
+    "whisper:model-download": "bash scripts/whisper-model-download.sh",
+    "mesh:build": "bash scripts/build-mesh.sh"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -26,7 +27,6 @@
     "eventemitter3": "^5.0.1",
     "franc": "^6.2.0",
     "gray-matter": "^4.0.3",
-    "node-fetch": "^3.3.2",
     "pino": "^8.19.0",
     "pino-pretty": "^11.0.0",
     "qrcode": "^1.5.4",

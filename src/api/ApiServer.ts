@@ -76,6 +76,8 @@ export interface ApiServerDeps {
   sendToDevice(deviceId: string, msg: Record<string, unknown>): Promise<unknown>;
   delegateHermes(description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }): Promise<unknown>;
   generateJournalNow(): Promise<unknown>;
+  /** Compile recorder-flagged hot skills to native artifacts. */
+  compileHotSkills(threshold?: number): Promise<unknown>;
   /** Rust mesh daemon status (P2P transport). */
   getMeshStatus(): Promise<unknown>;
   meshPair(ttl?: number): Promise<unknown>;
@@ -441,6 +443,9 @@ export class ApiServer {
         return { output: await this.deps.delegateHermes(description, opts) };
       }],
       [/^POST \/api\/journal\/generate$/, async () => ({ journal: await this.deps.generateJournalNow() })],
+      [/^POST \/api\/skills\/compile-hot$/, async (_url, body) => ({
+        compiled: await this.deps.compileHotSkills(body.threshold !== undefined ? Number(body.threshold) : undefined),
+      })],
       [/^GET \/api\/mesh\/status$/, async () => this.deps.getMeshStatus()],
       [/^POST \/api\/mesh\/pair$/, async (_url, body) => ({
         pair: await this.deps.meshPair(body.ttl !== undefined ? Number(body.ttl) : 120),

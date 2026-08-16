@@ -20,6 +20,7 @@ import { OpenMontageBridge } from '../video/OpenMontageBridge';
 import { VideoProducer, VideoBrief } from '../video/VideoProducer';
 import { SkillRouter } from '../skill/SkillRouter';
 import { SkillRecorder } from '../skill/SkillRecorder';
+import { SkillContentIndex } from '../skill/SkillContentIndex';
 import { McpRouter } from '../mcp/McpRouter';
 import { MeteringService } from '../metering/MeteringService';
 import { GraphifyContextEngine } from '../graphify/GraphifyContextEngine';
@@ -47,6 +48,7 @@ export class AgentRuntime {
   private repos?: ReposManager;
   private skillRouter?: SkillRouter;
   private skillRecorder?: SkillRecorder;
+  private skillContent?: SkillContentIndex;
   private mcpRouter?: McpRouter;
   private metering?: MeteringService;
   private graphify?: GraphifyContextEngine;
@@ -90,6 +92,7 @@ export class AgentRuntime {
     repos?: ReposManager;
     skillRouter?: SkillRouter;
     skillRecorder?: SkillRecorder;
+    skillContent?: SkillContentIndex;
     mcpRouter?: McpRouter;
     metering?: MeteringService;
     graphify?: GraphifyContextEngine;
@@ -117,6 +120,7 @@ export class AgentRuntime {
     if (subsystems.repos) this.repos = subsystems.repos;
     if (subsystems.skillRouter) this.skillRouter = subsystems.skillRouter;
     if (subsystems.skillRecorder) this.skillRecorder = subsystems.skillRecorder;
+    if (subsystems.skillContent) this.skillContent = subsystems.skillContent;
     if (subsystems.mcpRouter) this.mcpRouter = subsystems.mcpRouter;
     if (subsystems.metering) this.metering = subsystems.metering;
     if (subsystems.graphify) this.graphify = subsystems.graphify;
@@ -807,10 +811,11 @@ Relevant knowledge: ${contextBlock}` },
     }
 
     try {
+      const instructions = this.skillContent?.lookup(skill.id, skill.name) ?? null;
       const messages: LLMMessage[] = [
         {
           role: 'system',
-          content: `You are the "${skill.name}" skill in Umbra OS.\nPurpose: ${skill.purpose}\nSuccess criteria: ${skill.success}\nProduce a focused, actionable response for the user's request.`,
+          content: `You are the "${skill.name}" skill in Umbra OS.\nPurpose: ${skill.purpose}\nSuccess criteria: ${skill.success}${instructions ? `\n\nFollow these skill instructions:\n${instructions}` : ''}\nProduce a focused, actionable response for the user's request.`,
         },
         { role: 'user', content: `Request: ${intent}` },
       ];

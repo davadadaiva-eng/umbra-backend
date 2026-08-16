@@ -74,8 +74,10 @@ import { DeviceClient } from './p2p/DeviceClient';
 import { PwaServer } from './mobile/PwaServer';
 import { GraphifyContextEngine } from './core/graphify/GraphifyContextEngine';
 import { SkillCompiler } from './core/skill/SkillCompiler';
+import { CppBackend, NoopBackend } from './core/skill/NativeCompiler';
 import { SkillRecorder } from './core/skill/SkillRecorder';
 import { SkillRouter } from './core/skill/SkillRouter';
+import { SkillContentIndex } from './core/skill/SkillContentIndex';
 import { McpRegistry } from './core/mcp/McpRegistry';
 import { McpRouter } from './core/mcp/McpRouter';
 import { McpHttpConnector } from './core/mcp/McpHttpConnector';
@@ -143,6 +145,7 @@ export class UmbraOS {
   private skillCompiler!: SkillCompiler;
   private skillRecorder!: SkillRecorder;
   private skillRouter!: SkillRouter;
+  private skillContent!: SkillContentIndex;
   private mcpRegistry!: McpRegistry;
   private mcpRouter!: McpRouter;
   private mcpExternal!: ExternalRegistrySync;
@@ -530,6 +533,7 @@ export class UmbraOS {
       sendToDevice: (deviceId, msg) => this.sendToDevice(deviceId, msg),
       delegateHermes: (description, opts) => this.agent.delegateTask(description, opts),
       generateJournalNow: () => this.generateJournalNow(),
+      compileHotSkills: threshold => this.compileHotSkills(threshold),
       getMeshStatus: () => this.meshStatus(),
       meshPair: ttl => this.meshPair(ttl),
       meshPairDemo: () => this.meshPairDemo(),
@@ -654,9 +658,11 @@ export class UmbraOS {
     // ── Master Skill Stack + compiler + recorder + router ─────
     this.skillRecorder = new SkillRecorder({ dataDir: config.paths.dataDir });
     this.skillRouter = new SkillRouter();
+    this.skillContent = new SkillContentIndex();
     this.skillCompiler = new SkillCompiler({
       outDir: config.compiler.outputDir,
       compileHot: config.compiler.enabled && config.compiler.backend !== 'none',
+      backend: this.nativeBackend(config.compiler.backend),
     });
 
     // Register the 100-skill catalog into the MCP registry so the skill
@@ -674,6 +680,7 @@ export class UmbraOS {
     this.agent.registerSubsystems({
       skillRouter: this.skillRouter,
       skillRecorder: this.skillRecorder,
+      skillContent: this.skillContent,
       mcpRouter: this.mcpRouter,
       metering: this.metering,
       graphify: this.graphify,
@@ -1992,6 +1999,44 @@ export class UmbraOS {
 
   // ── Rust mesh (P2P transport) ─────────────────────────────
 
+  /** Map compiler.backend → a NativeBackend (or undefined for metadata-only). */
+  private nativeBackend(backend: 'none' | 'node' | 'tcc' | 'clang'): import('./core/skill/SkillCompiler').NativeBackend | undefined {
+    switch (backend) {
+      case 'tcc': return new CppBackend({ cc: 'tcc', emitOnly: true });
+      case 'clang': return new CppBackend({ cc: 'clang++', emitOnly: true });
+      case 'node': return new NoopBackend();
+      case 'none':
+      default: return undefined;
+    }
+  }
+
+  /**
+   * Promote hot skills (from the recorder) to native artifacts via the
+   * compiler backend. Maps catalog skills → SkillSpec → CompiledSkill, so
+   * the "compile hot skills to native" loop is actually exercised.
+   */
+  async compileHotSkills(threshold = 20): Promise<any> {
+    const hotIds = this.skillRecorder.hotSkills(threshold);
+    const compiled: any[] = [];
+    for (const id of hotIds) {
+      const skill = ALL_SKILLS.find(s => s.id === id);
+      if (!skill) continue;
+      const spec = {
+        name: skill.name,
+        version: '1.0.0',
+        domain: skill.domain,
+        description: skill.purpose,
+        systemPrompt: `Skill: ${skill.name}\nPurpose: ${skill.purpose}\nSuccess: ${skill.success}`,
+        tools: [{ name: 'execute', description: skill.purpose, inputSchema: { input: 'string' }, native: true }],
+        triggers: skill.triggers,
+        memorySize: 0,
+        hot: true,
+      };
+      compiled.push(await this.skillCompiler.compile(spec));
+    }
+    return { hot: hotIds, compiled };
+  }
+
   async meshStatus(): Promise<any> {
     return this.mesh ? this.mesh.status() : { running: false, enabled: false, reason: 'mesh not configured (desktop p2p disabled or headless)' };
   }
@@ -2231,6 +2276,7 @@ export class UmbraOS {
       skillRecorder: this.skillRecorder,
       skillRouter: this.skillRouter,
       skillRepos: listSkillRepos(),
+      skillContentIndexed: this.skillContent.size,
       mcpRegistry: this.mcpRegistry,
       mcpRouter: this.mcpRouter,
       credVault: this.credVault,
