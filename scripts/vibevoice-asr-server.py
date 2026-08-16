@@ -87,10 +87,11 @@ def load_model():
         STATE["model_path"], language_model_pretrained_name="Qwen/Qwen2.5-7B"
     )
     device = STATE["device"]
-    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    # bf16 halves memory on CPU too (7B model: ~17 GB fp32 vs ~8.6 GB bf16)
+    dtype = torch.bfloat16 if device in ("cuda", "cpu") else torch.float32
     model = VibeVoiceASRForConditionalGeneration.from_pretrained(
         STATE["model_path"],
-        dtype=dtype,
+        torch_dtype=dtype,
         device_map=device if device == "auto" else None,
         attn_implementation="sdpa",
         trust_remote_code=True,
