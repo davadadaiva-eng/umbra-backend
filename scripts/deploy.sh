@@ -17,6 +17,7 @@ docker save umbra-os:latest | gzip | ssh "$HOST" 'gunzip | docker load'
 
 echo "→ Starting via docker-compose on the server…"
 scp docker-compose.yml "$HOST":~/umbra/docker-compose.yml
+scp -r deploy "$HOST":~/umbra/   # Caddyfile + turnserver.conf for the edge profile
 ssh "$HOST" 'cd ~/umbra && docker compose up -d --remove-orphans'
 
 echo "✓ Deployed. API: http://<server-ip>:8787/api/health"

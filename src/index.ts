@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { ConfigManager } from './config/ConfigManager';
 import { KnowledgeGraph } from './knowledge/KnowledgeGraph';
@@ -536,10 +537,14 @@ export class UmbraOS {
       compileHotSkills: threshold => this.compileHotSkills(threshold),
       telcoSendSms: opts => this.telnyx.sendSms(opts),
       telcoCall: opts => this.telnyx.initiateCall(opts),
+      configureTelco: patch => this.configureTelco(patch),
+      getTelcoStatus: () => this.getTelcoStatus(),
       dockerRun: spec => this.dockerDaemon.run(spec),
       dockerStop: name => this.dockerDaemon.stop(name),
       dockerRemove: name => this.dockerDaemon.remove(name),
       dockerList: () => Promise.resolve(this.dockerDaemon.list()),
+      exportTaskQueue: () => this.exportTaskQueue(),
+      importTaskQueue: payload => this.importTaskQueue(payload),
       getMeshStatus: () => this.meshStatus(),
       meshPair: ttl => this.meshPair(ttl),
       meshPairDemo: () => this.meshPairDemo(),
@@ -604,6 +609,7 @@ export class UmbraOS {
         signalingPort: config.p2p.signalingPort,
         pairing,
         stunServers: config.p2p.stunServers,
+        turnServers: config.p2p.turnServers,
         relayFps: config.p2p.relayFps,
       };
       const p2p = new P2PConnectionManager(p2pOptions);
@@ -1369,6 +1375,84 @@ export class UmbraOS {
       },
       plan: c.plan.tier,
     };
+  }
+
+  /** Configure Telnyx SMS/call: store the API token in the vault, persist the
+   *  sender number + messaging profile, and rebuild the live client. */
+  async configureTelco(patch: {
+    apiKey?: string;
+    fromNumber?: string;
+    messagingProfileId?: string;
+    enabled?: boolean;
+  }): Promise<any> {
+    if (patch.apiKey) {
+      if (this.credVault.isUnlocked) {
+        const existing = this.credVault.find('telnyx');
+        this.credVault.set({ service: 'telnyx', username: 'api-key', secret: patch.apiKey }, existing?.id);
+      } else {
+        getLogger().warn('Credential vault locked — Telnyx API token not stored');
+      }
+    }
+    await this.configManager.updateTelco({
+      enabled: patch.enabled,
+      fromNumber: patch.fromNumber,
+      messagingProfileId: patch.messagingProfileId,
+    });
+    this.telnyx = new TelnyxClient({
+      fromNumber: this.configManager.raw.telco.fromNumber,
+      messagingProfileId: this.configManager.raw.telco.messagingProfileId,
+      vault: this.credVault,
+    });
+    getLogger().info({ fromNumber: this.configManager.raw.telco.fromNumber }, 'Telco configured');
+    return this.getTelcoStatus();
+  }
+
+  async getTelcoStatus(): Promise<any> {
+    const c = this.configManager.raw.telco;
+    return {
+      enabled: c.enabled,
+      provider: c.provider,
+      fromNumber: c.fromNumber,
+      messagingProfileId: c.messagingProfileId,
+      tokenConfigured: !!this.telnyx?.resolvedToken,
+    };
+  }
+
+  /** Export the durable task queue (filename → JSON text) for cross-node sync. */
+  exportTaskQueue(): { files: Record<string, string> } {
+    const dir = this.taskStore.storeDir;
+    const files: Record<string, string> = {};
+    try {
+      if (fs.existsSync(dir)) {
+        for (const f of fs.readdirSync(dir)) {
+          if (f.endsWith('.json') && !f.endsWith('.tmp')) {
+            files[f] = fs.readFileSync(path.join(dir, f), 'utf-8');
+          }
+        }
+      }
+    } catch (err: any) {
+      getLogger().warn({ err: err.message }, 'Task queue export failed');
+    }
+    return { files };
+  }
+
+  /** Import task-queue files from another node, then resume unfinished work. */
+  async importTaskQueue(payload: { files?: Record<string, string> }): Promise<{ imported: number; resumed: number }> {
+    const dir = this.taskStore.storeDir;
+    fs.mkdirSync(dir, { recursive: true });
+    let imported = 0;
+    for (const [name, content] of Object.entries(payload.files ?? {})) {
+      // Only accept safe, top-level JSON filenames (no traversal, no junk).
+      if (path.basename(name) !== name || !name.endsWith('.json') || name.endsWith('.tmp')) continue;
+      const target = path.join(dir, name);
+      const tmp = `${target}.tmp`;
+      fs.writeFileSync(tmp, content, 'utf-8');
+      fs.renameSync(tmp, target);
+      imported++;
+    }
+    const resumed = await this.agent.resumePendingTasks(this.role, this.configManager.raw.plan.tier);
+    getLogger().info({ imported, resumed }, 'Task queue imported');
+    return { imported, resumed };
   }
 
   // ── OpenMontage tool registry ──────────────────────────────

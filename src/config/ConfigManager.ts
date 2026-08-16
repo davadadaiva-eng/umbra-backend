@@ -57,6 +57,7 @@ const DEFAULT_CONFIG: UmbraConfig = {
       'stun:stun.l.google.com:19302',
       'stun:stun1.l.google.com:19302',
     ],
+    turnServers: [],
     relayFps: 10,
     meshEnabled: true,
   },
@@ -116,6 +117,7 @@ const DEFAULT_CONFIG: UmbraConfig = {
     enabled: false,
     provider: 'telnyx',
     fromNumber: '',
+    messagingProfileId: '',
   },
   docker: {
     enabled: false,
@@ -235,6 +237,15 @@ export class ConfigManager {
 
   async updateHotkeys(hotkeys: Partial<UmbraConfig['hotkeys']>): Promise<void> {
     Object.assign(this.config.hotkeys, hotkeys);
+    await this.saveConfig();
+  }
+
+  /** Persist telco (Telnyx) settings — sender number + messaging profile.
+   *  The API token itself lives in the CredentialVault (service 'telnyx'). */
+  async updateTelco(patch: { enabled?: boolean; fromNumber?: string; messagingProfileId?: string }): Promise<void> {
+    if (patch.enabled !== undefined) this.config.telco.enabled = patch.enabled;
+    if (patch.fromNumber !== undefined) this.config.telco.fromNumber = patch.fromNumber;
+    if (patch.messagingProfileId !== undefined) this.config.telco.messagingProfileId = patch.messagingProfileId;
     await this.saveConfig();
   }
 

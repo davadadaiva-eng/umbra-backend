@@ -59,10 +59,14 @@ function makeDeps() {
     generateJournalNow: async () => ({ ok: true }),
     telcoSendSms: async (opts: { to: string; text: string; from?: string }) => ({ ok: true, id: `sms-${opts.to}` }),
     telcoCall: async (opts: { to: string; from?: string; connectionUrl?: string }) => ({ ok: true, id: `call-${opts.to}` }),
+    configureTelco: async (patch: { apiKey?: string; fromNumber?: string }) => ({ enabled: true, provider: 'telnyx', fromNumber: patch.fromNumber ?? '+1555', tokenConfigured: !!patch.apiKey }),
+    getTelcoStatus: async () => ({ enabled: false, provider: 'telnyx', fromNumber: '', tokenConfigured: false }),
     dockerRun: async (spec: { name: string; image: string }) => ({ name: spec.name, running: true, startedAt: 1 }),
     dockerStop: async (name: string) => name === 'worker-1',
     dockerRemove: async (name: string) => name === 'worker-1',
     dockerList: async () => [{ name: 'worker-1', running: true }],
+    exportTaskQueue: () => ({ files: { 'task-1.json': '{"id":"task-1"}' } }),
+    importTaskQueue: async (payload: { files?: Record<string, string> }) => ({ imported: Object.keys(payload.files ?? {}).length, resumed: 1 }),
     voiceCommand: async (audio: string, opts?: { target?: string }) => ({ text: 'remind me to ship', dispatch: { taskId: 'task-7', target: opts?.target ?? 'desktop' } }),
     getVoiceStackHealth: async (refresh?: boolean) => ({
       ok: true,
@@ -493,6 +497,21 @@ describe('ApiServer', () => {
     expect(res.json.result.id).toBe('sms-+1555');
   });
 
+  test('telco status reports settings without the token', async () => {
+    const res = await api('/api/telco/status');
+    expect(res.status).toBe(200);
+    expect(res.json.enabled).toBe(false);
+    expect(res.json.tokenConfigured).toBe(false);
+  });
+
+  test('telco configure persists key + number', async () => {
+    const res = await api('/api/telco/configure', 'POST', { apiKey: 'KEY1234', fromNumber: '+1555', enabled: true });
+    expect(res.status).toBe(200);
+    expect(res.json.telco.enabled).toBe(true);
+    expect(res.json.telco.fromNumber).toBe('+1555');
+    expect(res.json.telco.tokenConfigured).toBe(true);
+  });
+
   test('telco call initiates a call', async () => {
     const res = await api('/api/telco/call', 'POST', { to: '+1555', connectionUrl: 'https://example.com/call' });
     expect(res.status).toBe(200);
@@ -515,5 +534,18 @@ describe('ApiServer', () => {
     expect((await api('/api/docker/remove', 'POST', { name: 'worker-1' })).json.removed).toBe(true);
     const list = await api('/api/docker/list');
     expect(list.json.containers).toHaveLength(1);
+  });
+
+  test('task-queue export returns durable files', async () => {
+    const res = await api('/api/task-queue/export');
+    expect(res.status).toBe(200);
+    expect(res.json.files['task-1.json']).toContain('task-1');
+  });
+
+  test('task-queue import accepts files and resumes', async () => {
+    const res = await api('/api/task-queue/import', 'POST', { files: { 'task-2.json': '{"id":"task-2"}', 'task-3.json': '{"id":"task-3"}' } });
+    expect(res.status).toBe(200);
+    expect(res.json.sync.imported).toBe(2);
+    expect(res.json.sync.resumed).toBe(1);
   });
 });

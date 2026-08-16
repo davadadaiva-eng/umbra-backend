@@ -82,6 +82,10 @@ export interface ApiServerDeps {
   telcoSendSms(opts: { to: string; text: string; from?: string }): Promise<unknown>;
   /** Telco (Telnyx) — initiate a voice call. */
   telcoCall(opts: { to: string; from?: string; connectionUrl?: string }): Promise<unknown>;
+  /** Telco (Telnyx) — persist the API token + sender number + messaging profile. */
+  configureTelco(patch: { apiKey?: string; fromNumber?: string; messagingProfileId?: string; enabled?: boolean }): Promise<unknown>;
+  /** Telco (Telnyx) — current settings (token masked out). */
+  getTelcoStatus(): Promise<unknown>;
   /** Docker — run a containerized skill worker. */
   dockerRun(spec: { name: string; image: string; command?: string[]; env?: Record<string, string>; memoryLimitMb?: number; cpuQuotaPct?: number }): Promise<unknown>;
   /** Docker — stop a worker container. */
@@ -90,6 +94,10 @@ export interface ApiServerDeps {
   dockerRemove(name: string): Promise<unknown>;
   /** Docker — list tracked worker containers. */
   dockerList(): Promise<unknown>;
+  /** Durable task-queue export (filename → JSON text) for desktop↔cloud handoff. */
+  exportTaskQueue(): { files: Record<string, string> };
+  /** Import task-queue files from another node, then resume unfinished work. */
+  importTaskQueue(payload: { files?: Record<string, string> }): Promise<{ imported: number; resumed: number }>;
   /** Rust mesh daemon status (P2P transport). */
   getMeshStatus(): Promise<unknown>;
   meshPair(ttl?: number): Promise<unknown>;
@@ -458,6 +466,15 @@ export class ApiServer {
       [/^POST \/api\/skills\/compile-hot$/, async (_url, body) => ({
         compiled: await this.deps.compileHotSkills(body.threshold !== undefined ? Number(body.threshold) : undefined),
       })],
+      [/^GET \/api\/telco\/status$/, async () => this.deps.getTelcoStatus()],
+      [/^POST \/api\/telco\/configure$/, async (_url, body) => ({
+        telco: await this.deps.configureTelco({
+          apiKey: body.apiKey !== undefined ? String(body.apiKey) : undefined,
+          fromNumber: body.fromNumber !== undefined ? String(body.fromNumber) : undefined,
+          messagingProfileId: body.messagingProfileId !== undefined ? String(body.messagingProfileId) : undefined,
+          enabled: body.enabled !== undefined ? body.enabled === true || body.enabled === 'true' : undefined,
+        }),
+      })],
       [/^POST \/api\/telco\/sms$/, async (_url, body) => {
         const to = String(body.to || '');
         const text = String(body.text || '');
@@ -497,6 +514,12 @@ export class ApiServer {
         return { removed: await this.deps.dockerRemove(name) };
       }],
       [/^GET \/api\/docker\/list$/, async () => ({ containers: await this.deps.dockerList() })],
+      [/^GET \/api\/task-queue\/export$/, async () => this.deps.exportTaskQueue()],
+      [/^POST \/api\/task-queue\/import$/, async (_url, body) => ({
+        sync: await this.deps.importTaskQueue({
+          files: body.files && typeof body.files === 'object' ? body.files as Record<string, string> : undefined,
+        }),
+      })],
       [/^GET \/api\/mesh\/status$/, async () => this.deps.getMeshStatus()],
       [/^POST \/api\/mesh\/pair$/, async (_url, body) => ({
         pair: await this.deps.meshPair(body.ttl !== undefined ? Number(body.ttl) : 120),

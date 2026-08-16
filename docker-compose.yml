@@ -18,6 +18,41 @@ services:
     volumes:
       - umbra-data:/root/.umbra
 
+  # ── TLS termination (auto Let's Encrypt) for the API + DeviceHub ──────
+  # Run with: docker compose --profile edge up -d
+  # Set UMBRA_DOMAIN=umbra.example.com (Caddy issues the cert automatically).
+  caddy:
+    image: caddy:2-alpine
+    container_name: umbra-caddy
+    restart: unless-stopped
+    profiles: ["edge"]
+    environment:
+      - UMBRA_DOMAIN=${UMBRA_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - umbra
+
+  # ── TURN relay for WebRTC NAT traversal (phone PWA off-LAN) ───────────
+  # Linux VPS only (host networking, standard for TURN). Edit
+  # deploy/turnserver.conf credentials, then add the turn: URL to config:
+  #   p2p.turnServers = ["turn:turnuser:turnpass@<server>:3478"]
+  coturn:
+    image: coturn/coturn:latest
+    container_name: umbra-turn
+    restart: unless-stopped
+    profiles: ["edge"]
+    network_mode: host
+    command: ["-c", "/etc/turnserver.conf"]
+    volumes:
+      - ./deploy/turnserver.conf:/etc/turnserver.conf:ro
+
   # Local, free, private voice-to-text (whisper.cpp).
   # Download the model first: MODEL=medium.en ./scripts/download-whisper-model.sh
   # Then set voice.sttProvider = "whisper-local" and
@@ -35,3 +70,5 @@ services:
 
 volumes:
   umbra-data:
+  caddy-data:
+  caddy-config:

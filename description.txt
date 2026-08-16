@@ -29,7 +29,7 @@ CORE IDEA
 TECH STACK
 ----------
 - Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
-- Jest (ts-jest) for tests — 48 suites, 368 tests, all green
+- Jest (ts-jest) for tests — 48 suites, 372 tests, all green
 - oxlint for linting — zero issues
 - better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
 - node-fetch-free: uses Node 18+ global fetch
@@ -82,7 +82,7 @@ HOW TO BUILD / TEST / RUN
 -------------------------
     npm install          # install deps
     npm run build        # tsc → dist/
-    npm test             # jest (368 tests today)
+    npm test             # jest (372 tests today)
     npm run lint         # oxlint
 
 Run requires either a local Ollama (free, default:
@@ -112,7 +112,7 @@ Generated with sane defaults by ConfigManager on first run. Key sections
     compiler                     — skill native backend (none | node | tcc | clang)
     shadow, meeting, telco, docker — feature toggles + provider settings
 
-WHAT IS DONE (state: build+tests+lint green, 368 tests / 48 suites)
+WHAT IS DONE (state: build+tests+lint green, 372 tests / 48 suites)
 -------------------------------------------------------------------
 1. Agent loop: planning (with clarification), step execution (browse, desktop,
    ghost real-desktop, files, repos, video tools, web search), self-healing,
@@ -277,27 +277,33 @@ WHAT IS DONE (state: build+tests+lint green, 368 tests / 48 suites)
     mark the system prompt with cache_control: ephemeral so prompt caching
     actually engages and the assumed cache-hit pricing holds.
 
-HOW TO CONTINUE (roadmap — what collaborators should pick up)
-------------------------------------------------------------
-1. Setup CLI (scripts/setup.ts or `npm run setup`):
-   collect provider + API keys → CredentialVault → write config.json → live
-   validation call. (Currently keys are placed manually in config or vault.)
-2. Cloud Docker deployment: DONE (Dockerfile, docker-compose.yml, deploy
-   script, docs) + headless boot + durable resume. REMAINING: HTTPS + a TURN
-   server for the phone PWA off-LAN, and a desktop→cloud sync mechanism
-   (rclone/Syncthing/NFS) so the two nodes share the task-queue dir in
-   production (the code path is ready — see docs/cloud-deploy.md).
-3. Live LLM testing on real providers: DONE via POST /api/llm/test (route,
-   validation call) — still needs a real-key end-to-end run against OpenAI/
-   Anthropic before shipping the hosted plans.
-4. NativeCore smoke tests (src/native/win32) on a real machine; CI story for
-   Windows runners (build + tests + lint in GitHub Actions).
+HOW TO CONTINUE (remaining work — mostly user keys/hardware, not code)
+----------------------------------------------------------------------
+1. Setup CLI: DONE — scripts/setup.ts collects provider + API keys (plus an
+   optional Telnyx key/from-number) → CredentialVault → config.json → live
+   validation call.
+2. Cloud Docker deployment: DONE — Dockerfile, docker-compose.yml, deploy
+   script, headless boot, durable resume, HTTPS via Caddy (edge profile) +
+   coturn TURN relay, and a built-in desktop→cloud task-queue sync helper
+   (npm run sync:queue -- push|pull; see docs/cloud-deploy.md).
+3. Telco (Telnyx SMS/calls) + Docker workers: DONE — REST endpoints wired to
+   the live clients (POST /api/telco/sms, /api/telco/call,
+   /api/telco/configure, GET /api/telco/status, POST /api/docker/run|stop|
+   remove, GET /api/docker/list).
+4. Live LLM testing on real providers: code path DONE (POST /api/llm/test);
+   a real-key end-to-end run against OpenAI/Anthropic still needs the user's
+   provider API keys.
 5. MCP connectors: DONE — catalog + vault-backed connect flow + POST
    /api/mcp/connect; each connector still needs a real endpoint/key entered
    by the user (no bundled endpoints).
-6. Mesh (Rust): wire umbra-mesh encrypted channel as an alternative to the ws
-   relay in P2PConnectionManager.
-7. Video production: DONE — OpenMontage tools are auto-discovered from
+6. Mesh (Rust): umbra-meshd daemon + pairing embedded and exposed
+   (GET /api/mesh/status, /api/mesh/pair, /api/mesh/pair-demo,
+   /api/mesh/revoke). Remaining: use the encrypted mesh channel as a full
+   transport alternative to the ws relay in P2PConnectionManager.
+7. NativeCore smoke tests (src/native/win32) on a real Windows machine —
+   needs real hardware, not code. CI (build + test + lint, Windows + Ubuntu
+   runners) is DONE via .github/workflows/ci.yml.
+8. Video production: DONE — OpenMontage tools auto-discovered from
    external/OpenMontage and exposed as native MCP tools + an API listing.
 
 CONVENTIONS

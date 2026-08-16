@@ -129,6 +129,8 @@ export interface UmbraConfig {
     webPort: number;
     signalingPort: number;
     stunServers: string[];
+    /** Optional TURN relay URLs (`turn:host:port`) for NAT-traversal fallback. */
+    turnServers?: string[];
     relayFps: number;
     /**
      * Embed the Rust mesh daemon (umbra-meshd, mesh/) as an optional P2P
@@ -231,6 +233,8 @@ export interface UmbraConfig {
     enabled: boolean;
     provider: 'telnyx';
     fromNumber: string;
+    /** Optional Telnyx messaging profile id for SMS. */
+    messagingProfileId?: string;
   };
   docker: {
     enabled: boolean;

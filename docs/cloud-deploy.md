@@ -43,9 +43,23 @@ same `task-queue/` directory. Two supported setups:
 1. **Shared volume**: point both nodes' `~/.umbra` (or just `task-queue/`) at
    the same NFS/object-store path (the Docker volume `umbra-data:/root/.umbra`
    already isolates it for backup/sync).
-2. **One-way sync**: sync the PC's `~/.umbra/task-queue/` and `recall.db` up
-   to the cloud (rclone/Syncthing). The cloud resumes what the PC checkpointed
-   before it went offline.
+2. **API sync (built-in)**: push/pull the queue over the cloud's REST API —
+   no shared filesystem or third-party tool needed:
+
+   ```bash
+   # PC → cloud (before the PC goes offline; the cloud resumes)
+   UMBRA_API_URL=https://umbra.example.com npm run sync:queue -- push
+
+   # cloud → PC (when the PC comes back online)
+   UMBRA_API_URL=https://umbra.example.com npm run sync:queue -- pull
+   ```
+
+   `push` POSTs the local `~/.umbra/task-queue/*.json` to
+   `POST /api/task-queue/import`; `pull` reads `GET /api/task-queue/export`
+   back into the local dir. Run it from cron/Task Scheduler for continuous
+   handoff.
+3. **File sync**: sync the PC's `~/.umbra/task-queue/` and `recall.db` up to
+   the cloud (rclone/Syncthing) as an alternative to the API helper.
 
 ## Headless mode (what the cloud skips)
 
@@ -95,9 +109,26 @@ node -e "os.joinRemoteHub('CODE')"
 ```
 
 Set `UMBRA_PUBLIC_URL` on the cloud so QR/link payloads point at your domain.
-For production, terminate TLS at a reverse proxy (wss for the hub) — the
-WebRTC/TURN story for real-time video is still a follow-up; until then the
-hub relays encrypted control messages and JPEG frames.
+
+### TLS + TURN (production edge)
+
+`docker-compose.yml` ships an `edge` profile with TLS and a TURN relay for the
+phone PWA off-LAN:
+
+```bash
+# On the VPS: point a domain at the box, then
+UMBRA_DOMAIN=umbra.example.com docker compose --profile edge up -d
+```
+
+- **caddy** terminates TLS (auto Let's Encrypt) and proxies
+  `https://<domain>/api/*` → `umbra:8787` and `wss://<domain>/device-ws` →
+  `umbra:8788` (see `deploy/Caddyfile`).
+- **coturn** is the TURN relay for WebRTC NAT traversal (host networking).
+  Edit `deploy/turnserver.conf` (set your `user=…:…` credential, `realm`, and
+  `server-name`), then point the phone at it in config:
+  `p2p.turnServers = ["turn:turnuser:turnpass@<server>:3478"]`. The PWA falls
+  back from a direct WebRTC data channel to the encrypted JPEG relay
+  automatically, and TURN now lets the direct path work behind symmetric NAT.
 
 ## Voice-to-text (whisper.cpp)
 

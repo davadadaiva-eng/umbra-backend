@@ -14,6 +14,7 @@
 import * as readline from 'readline';
 import * as path from 'path';
 import { ConfigManager } from '../src/config/ConfigManager';
+import { CredentialVault } from '../src/core/vault/CredentialVault';
 import { DEFAULT_ROUTING } from '../src/core/metering/ModelRouter';
 import { ModelProvider, PlanTier } from '../src/types';
 
@@ -110,6 +111,11 @@ async function main(): Promise<void> {
   const modelFast = arg('model-fast') || (rl ? await ask(rl, 'Fast model', defaults.fast) : defaults.fast);
   const tier = (arg('tier') || 'free') as PlanTier;
 
+  // ── Telco (Telnyx) — optional ───────────────────────────
+  const telnyxKey = arg('telnyx-key') || process.env.TELNYX_API_KEY || (rl ? await ask(rl, 'Telnyx API key (optional, Enter to skip)', '') : '');
+  const telnyxFrom = arg('telnyx-from') || (telnyxKey && rl ? await ask(rl, 'Telnyx from-number (E.164, e.g. +1234567890)', '') : '');
+  const telnyxProfile = arg('telnyx-profile') || '';
+
   if (rl) rl.close();
 
   // ── Persist ───────────────────────────────────────────────
@@ -125,10 +131,19 @@ async function main(): Promise<void> {
   }
   await cm.saveConfig();
 
+  if (telnyxKey) {
+    const vault = new CredentialVault({ dataDir, hwid: process.env.UMBRA_HWID || 'local-machine' });
+    vault.unlock();
+    const existing = vault.find('telnyx');
+    vault.set({ service: 'telnyx', username: 'api-key', secret: telnyxKey }, existing?.id);
+    await cm.updateTelco({ enabled: !!telnyxFrom, fromNumber: telnyxFrom || undefined, messagingProfileId: telnyxProfile || undefined });
+  }
+
   console.log(`\n✔ Saved config to ${dataDir}/config.json`);
   console.log(`  provider : ${provider}`);
   console.log(`  models   : reasoning=${modelReasoning} vision=${modelVision} fast=${modelFast}`);
   console.log(`  tier     : ${tier}`);
+  if (telnyxKey) console.log(`  telco    : Telnyx token stored${telnyxFrom ? `, from ${telnyxFrom}` : ''}`);
 
   // ── Live validation ───────────────────────────────────────
   console.log('\nValidating…');

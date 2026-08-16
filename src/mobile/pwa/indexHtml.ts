@@ -296,7 +296,7 @@ function startPairing(){
         log('Welcome: relayFps=' + msg.relayFps + ' webrtc=' + msg.webrtc);
         document.getElementById('pairCard').style.display = 'none';
         document.getElementById('viewCard').style.display = 'block';
-        if (msg.webrtc === true){ tryWebRTC(msg.stunServers || []); }
+        if (msg.webrtc === true){ tryWebRTC(msg.stunServers || [], msg.turnServers || []); }
       } else if (msg.type === 'enc'){
         handleEnc(msg.enc);
       } else if (msg.type === 'pair-failed' || msg.type === 'error'){
@@ -394,10 +394,12 @@ document.getElementById('btnMic').addEventListener('click', function(){
 });
 
 // ── WebRTC attempt (data channel path, falls back to relay) ─
-function tryWebRTC(stunServers){
+function tryWebRTC(stunServers, turnServers){
   if (!window.RTCPeerConnection){ return; }
   try {
-    var pc = new RTCPeerConnection({iceServers: stunServers.map(function(u){ return {urls: u}; })});
+    var iceServers = (stunServers || []).map(function(u){ return {urls: u}; })
+      .concat((turnServers || []).map(function(u){ return {urls: u}; }));
+    var pc = new RTCPeerConnection({iceServers: iceServers});
     var ch = pc.createDataChannel('umbra');
     ch.onopen = function(){ log('WebRTC data channel open'); };
     pc.onicecandidate = function(e){

@@ -11,6 +11,7 @@ export type P2PFrameProvider = () => Promise<Buffer | null>;
 export interface P2PConnectionManagerOptions {
   signalingPort: number;
   stunServers: string[];
+  turnServers?: string[];
   relayFps: number;
   pairing: PairingManager;
   commandHandler?: P2PCommandHandler | null;
@@ -111,12 +112,13 @@ export class P2PConnectionManager {
     getLogger().info('P2P signaling server stopped');
   }
 
-  getStatus(): { active: boolean; clients: number; pairedDevices: number; stunServers: string[] } {
+  getStatus(): { active: boolean; clients: number; pairedDevices: number; stunServers: string[]; turnServers: string[] } {
     return {
       active: this.active,
       clients: this.clients.size,
       pairedDevices: this.pairing.listDevices().length,
       stunServers: this.options.stunServers,
+      turnServers: this.options.turnServers ?? [],
     };
   }
 
@@ -180,6 +182,7 @@ export class P2PConnectionManager {
       relayFps: this.options.relayFps,
       webrtc: !!this.options.webrtcConfig?.enabled,
       stunServers: this.options.stunServers,
+      turnServers: this.options.turnServers ?? [],
     });
   }
 
