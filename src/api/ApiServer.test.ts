@@ -57,6 +57,12 @@ function makeDeps() {
     setAudioDefault: async (opts: { flow?: string; deviceId?: string }) => ({ result: `set ${opts?.flow ?? 'render'} ${opts?.deviceId}` }),
     delegateHermes: async (description: string, opts?: { provider?: string; model?: string; timeoutMs?: number }) => ({ description, ...opts }),
     generateJournalNow: async () => ({ ok: true }),
+    telcoSendSms: async (opts: { to: string; text: string; from?: string }) => ({ ok: true, id: `sms-${opts.to}` }),
+    telcoCall: async (opts: { to: string; from?: string; connectionUrl?: string }) => ({ ok: true, id: `call-${opts.to}` }),
+    dockerRun: async (spec: { name: string; image: string }) => ({ name: spec.name, running: true, startedAt: 1 }),
+    dockerStop: async (name: string) => name === 'worker-1',
+    dockerRemove: async (name: string) => name === 'worker-1',
+    dockerList: async () => [{ name: 'worker-1', running: true }],
     voiceCommand: async (audio: string, opts?: { target?: string }) => ({ text: 'remind me to ship', dispatch: { taskId: 'task-7', target: opts?.target ?? 'desktop' } }),
     getVoiceStackHealth: async (refresh?: boolean) => ({
       ok: true,
@@ -473,5 +479,41 @@ describe('ApiServer', () => {
     const res = await api('/api/voice/health?refresh=1');
     expect(res.status).toBe(200);
     expect(res.json.refreshed).toBe(true);
+  });
+
+  test('telco sms requires to and text', async () => {
+    const res = await api('/api/telco/sms', 'POST', { to: '+1555' });
+    expect(res.status).toBe(500);
+  });
+
+  test('telco sms sends a message', async () => {
+    const res = await api('/api/telco/sms', 'POST', { to: '+1555', text: 'hi' });
+    expect(res.status).toBe(200);
+    expect(res.json.result.ok).toBe(true);
+    expect(res.json.result.id).toBe('sms-+1555');
+  });
+
+  test('telco call initiates a call', async () => {
+    const res = await api('/api/telco/call', 'POST', { to: '+1555', connectionUrl: 'https://example.com/call' });
+    expect(res.status).toBe(200);
+    expect(res.json.result.id).toBe('call-+1555');
+  });
+
+  test('docker run requires name and image', async () => {
+    const res = await api('/api/docker/run', 'POST', { name: 'worker-1' });
+    expect(res.status).toBe(500);
+  });
+
+  test('docker run starts a container', async () => {
+    const res = await api('/api/docker/run', 'POST', { name: 'worker-1', image: 'umbra/skill' });
+    expect(res.status).toBe(200);
+    expect(res.json.container.running).toBe(true);
+  });
+
+  test('docker stop/remove/list round-trip', async () => {
+    expect((await api('/api/docker/stop', 'POST', { name: 'worker-1' })).json.stopped).toBe(true);
+    expect((await api('/api/docker/remove', 'POST', { name: 'worker-1' })).json.removed).toBe(true);
+    const list = await api('/api/docker/list');
+    expect(list.json.containers).toHaveLength(1);
   });
 });

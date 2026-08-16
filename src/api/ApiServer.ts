@@ -78,6 +78,18 @@ export interface ApiServerDeps {
   generateJournalNow(): Promise<unknown>;
   /** Compile recorder-flagged hot skills to native artifacts. */
   compileHotSkills(threshold?: number): Promise<unknown>;
+  /** Telco (Telnyx) — send an SMS. */
+  telcoSendSms(opts: { to: string; text: string; from?: string }): Promise<unknown>;
+  /** Telco (Telnyx) — initiate a voice call. */
+  telcoCall(opts: { to: string; from?: string; connectionUrl?: string }): Promise<unknown>;
+  /** Docker — run a containerized skill worker. */
+  dockerRun(spec: { name: string; image: string; command?: string[]; env?: Record<string, string>; memoryLimitMb?: number; cpuQuotaPct?: number }): Promise<unknown>;
+  /** Docker — stop a worker container. */
+  dockerStop(name: string): Promise<unknown>;
+  /** Docker — remove a worker container. */
+  dockerRemove(name: string): Promise<unknown>;
+  /** Docker — list tracked worker containers. */
+  dockerList(): Promise<unknown>;
   /** Rust mesh daemon status (P2P transport). */
   getMeshStatus(): Promise<unknown>;
   meshPair(ttl?: number): Promise<unknown>;
@@ -446,6 +458,45 @@ export class ApiServer {
       [/^POST \/api\/skills\/compile-hot$/, async (_url, body) => ({
         compiled: await this.deps.compileHotSkills(body.threshold !== undefined ? Number(body.threshold) : undefined),
       })],
+      [/^POST \/api\/telco\/sms$/, async (_url, body) => {
+        const to = String(body.to || '');
+        const text = String(body.text || '');
+        if (!to || !text) throw new Error('to and text are required');
+        return { result: await this.deps.telcoSendSms({ to, text, from: body.from !== undefined ? String(body.from) : undefined }) };
+      }],
+      [/^POST \/api\/telco\/call$/, async (_url, body) => {
+        const to = String(body.to || '');
+        if (!to) throw new Error('to is required');
+        return { result: await this.deps.telcoCall({
+          to,
+          from: body.from !== undefined ? String(body.from) : undefined,
+          connectionUrl: body.connectionUrl !== undefined ? String(body.connectionUrl) : undefined,
+        }) };
+      }],
+      [/^POST \/api\/docker\/run$/, async (_url, body) => {
+        const name = String(body.name || '');
+        const image = String(body.image || '');
+        if (!name || !image) throw new Error('name and image are required');
+        return { container: await this.deps.dockerRun({
+          name,
+          image,
+          command: Array.isArray(body.command) ? body.command.map(String) : undefined,
+          env: body.env && typeof body.env === 'object' ? body.env as Record<string, string> : undefined,
+          memoryLimitMb: body.memoryLimitMb !== undefined ? Number(body.memoryLimitMb) : undefined,
+          cpuQuotaPct: body.cpuQuotaPct !== undefined ? Number(body.cpuQuotaPct) : undefined,
+        }) };
+      }],
+      [/^POST \/api\/docker\/stop$/, async (_url, body) => {
+        const name = String(body.name || '');
+        if (!name) throw new Error('name is required');
+        return { stopped: await this.deps.dockerStop(name) };
+      }],
+      [/^POST \/api\/docker\/remove$/, async (_url, body) => {
+        const name = String(body.name || '');
+        if (!name) throw new Error('name is required');
+        return { removed: await this.deps.dockerRemove(name) };
+      }],
+      [/^GET \/api\/docker\/list$/, async () => ({ containers: await this.deps.dockerList() })],
       [/^GET \/api\/mesh\/status$/, async () => this.deps.getMeshStatus()],
       [/^POST \/api\/mesh\/pair$/, async (_url, body) => ({
         pair: await this.deps.meshPair(body.ttl !== undefined ? Number(body.ttl) : 120),

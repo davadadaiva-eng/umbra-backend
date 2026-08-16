@@ -29,12 +29,13 @@ CORE IDEA
 TECH STACK
 ----------
 - Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
-- Jest (ts-jest) for tests — 30 suites, 219 tests, all green
+- Jest (ts-jest) for tests — 48 suites, 368 tests, all green
 - oxlint for linting — zero issues
 - better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
 - node-fetch-free: uses Node 18+ global fetch
 - Rust (cargo) in `mesh/` for the encrypted P2P mesh
-- Tesseract (eng.traineddata committed) for OCR
+- Tesseract (local `eng.traineddata` auto-downloaded and cached in `~/.umbra/lang/`,
+  resumable) for OCR
 - PWA in `src/mobile/pwa/` for phone pairing/control
 - WebRTC (ws signaling) for device streaming
 
@@ -81,7 +82,7 @@ HOW TO BUILD / TEST / RUN
 -------------------------
     npm install          # install deps
     npm run build        # tsc → dist/
-    npm test             # jest (219 tests today)
+    npm test             # jest (368 tests today)
     npm run lint         # oxlint
 
 Run requires either a local Ollama (free, default:
@@ -111,7 +112,7 @@ Generated with sane defaults by ConfigManager on first run. Key sections
     compiler                     — skill native backend (none | node | tcc | clang)
     shadow, meeting, telco, docker — feature toggles + provider settings
 
-WHAT IS DONE (state: build+tests+lint green, 219 tests / 30 suites)
+WHAT IS DONE (state: build+tests+lint green, 368 tests / 48 suites)
 -------------------------------------------------------------------
 1. Agent loop: planning (with clarification), step execution (browse, desktop,
    ghost real-desktop, files, repos, video tools, web search), self-healing,
