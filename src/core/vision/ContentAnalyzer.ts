@@ -1,5 +1,6 @@
 import { ScreenContent } from './ScreenReader';
 import { LLMConnector, LLMMessage } from '../agent/LLMConnector';
+import { InjectionGuard } from '../agent/InjectionGuard';
 
 export interface TaskContext {
   domain: string;
@@ -20,6 +21,7 @@ export interface ContextSummary {
 
 export class ContentAnalyzer {
   private llm?: LLMConnector;
+  private injectionGuard = new InjectionGuard();
 
   setLLM(llm: LLMConnector): void {
     this.llm = llm;
@@ -73,7 +75,7 @@ export class ContentAnalyzer {
   "intent": "short phrase like fixing_error | reviewing_code | writing_docs | searching | reading_email | chatting | coding | deploying | planning | learning | browsing"
 }`,
         },
-        { role: 'user', content: `Screen text captured via OCR:\n\n${allText.substring(0, 3000)}` },
+        { role: 'user', content: this.injectionGuard.scrub(`Screen text captured via OCR:\n\n${allText.substring(0, 3000)}`, 'ocr-screen').text },
       ];
       const result = await this.llm.complete(messages, 'fast', { temperature: 0.1, maxTokens: 500 });
       const parsed = JSON.parse(result.content);
@@ -159,7 +161,7 @@ export class ContentAnalyzer {
             role: 'system',
             content: 'Based on the screen content, suggest 1-3 things the AI assistant could do to help. Return as JSON array of strings. Be specific and actionable.',
           },
-          { role: 'user', content: `Screen text: ${content.filteredText.substring(0, 1500)}\nDomain: ${context.domain}\nIntent: ${context.detectedIntent}` },
+          { role: 'user', content: this.injectionGuard.scrub(`Screen text: ${content.filteredText.substring(0, 1500)}\nDomain: ${context.domain}\nIntent: ${context.detectedIntent}`, 'screen-suggestions').text },
         ];
         const result = await this.llm.complete(messages, 'fast', { temperature: 0.2, maxTokens: 500 });
         try {

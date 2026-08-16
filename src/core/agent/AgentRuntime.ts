@@ -27,6 +27,7 @@ import { HermesAgentBridge } from './HermesAgent';
 import { InProcessAgent } from './InProcessAgent';
 import { eventBus } from '../EventBus';
 import { getLogger } from '../Logger';
+import { InjectionGuard } from './InjectionGuard';
 export class AgentRuntime {
   private llm: LLMConnector;
   private planner: TaskPlanner;
@@ -59,6 +60,8 @@ export class AgentRuntime {
   /** Durable task queue — enables cross-restart (and cross-node) resume. */
   private store?: TaskStore;
   private nodeRole: 'desktop' | 'cloud' = 'desktop';
+  /** Quarantines prompt-injection attempts in untrusted observations before they reach an LLM. */
+  private injectionGuard = new InjectionGuard();
 
   constructor(
     llm: LLMConnector,
@@ -97,6 +100,8 @@ export class AgentRuntime {
     taskStore?: TaskStore;
     /** Which node is running ('desktop' = the user's PC, 'cloud' = headless box). */
     nodeRole?: 'desktop' | 'cloud';
+    /** Injection guard override (e.g. wired to the audit vault) — defaults to a standalone guard. */
+    injectionGuard?: InjectionGuard;
   }): void {
     if (subsystems.swarm) this.swarm = subsystems.swarm;
     if (subsystems.healer) this.healer = subsystems.healer;
@@ -119,6 +124,7 @@ export class AgentRuntime {
     if (subsystems.autoDelegate !== undefined) this.autoDelegate = subsystems.autoDelegate;
     if (subsystems.taskStore) this.store = subsystems.taskStore;
     if (subsystems.nodeRole) this.nodeRole = subsystems.nodeRole;
+    if (subsystems.injectionGuard) this.injectionGuard = subsystems.injectionGuard;
   }
 
   async submitTask(description: string, priority: number = 0): Promise<Task> {
@@ -1097,7 +1103,7 @@ Relevant knowledge: ${contextBlock}` },
     await this.knowledge.learnFromExecution(
       task.description,
       steps.map(s => s.description),
-      steps.map(s => s.result || s.error || '').join('\n')
+      this.injectionGuard.scrub(steps.map(s => s.result || s.error || '').join('\n'), 'step-results').text
     );
   }
 
