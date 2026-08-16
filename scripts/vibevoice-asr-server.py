@@ -30,6 +30,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 # Force the plain sequential HTTP downloader before anything touches the Hub;
@@ -197,20 +198,35 @@ async def transcribe_endpoint(audio: UploadFile = File(...), context: str = Form
 
 
 def _load_worker():
-    try:
-        processor, model, run_device = load_model()
-        with _LOCK:
-            STATE["processor"] = processor
-            STATE["model"] = model
-            STATE["run_device"] = run_device
-            STATE["state"] = "ready"
-    except Exception as e:  # noqa: BLE001
-        import traceback
+    # Retry the whole load a few times: the ~17 GB download can drop a chunk on
+    # flaky links, and hf_hub_download resumes, so a retry continues in place.
+    attempts = 6
+    delay = 15.0
+    last_error = None
+    for n in range(1, attempts + 1):
+        try:
+            processor, model, run_device = load_model()
+            with _LOCK:
+                STATE["processor"] = processor
+                STATE["model"] = model
+                STATE["run_device"] = run_device
+                STATE["state"] = "ready"
+                STATE["error"] = None
+            return
+        except Exception as e:  # noqa: BLE001
+            import traceback
 
-        traceback.print_exc()
-        with _LOCK:
-            STATE["state"] = "error"
-            STATE["error"] = f"{type(e).__name__}: {e}"
+            traceback.print_exc()
+            last_error = e
+            if n == attempts:
+                break
+            with _LOCK:
+                STATE["error"] = f"{type(e).__name__}: {e} (attempt {n}/{attempts})"
+            print(f"[vibevoice-asr] load attempt {n}/{attempts} failed; retrying in {delay:.0f}s", flush=True)
+            time.sleep(delay)
+    with _LOCK:
+        STATE["state"] = "error"
+        STATE["error"] = f"{type(last_error).__name__}: {last_error}"
 
 
 def main():

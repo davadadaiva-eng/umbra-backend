@@ -807,10 +807,17 @@ export class UmbraOS {
             return { ok: false, error: `Unknown TTS provider: ${tts}` };
           },
           asr: async () => {
-            const running = this.vibeVoiceAsr ? await this.vibeVoiceAsr.isRunning().catch(() => false) : false;
-            return running
-              ? { ok: true, detail: 'VibeVoice-ASR server running (npm run vibevoice:asr-server)' }
-              : { ok: false, error: 'VibeVoice-ASR not running — start `npm run vibevoice:asr-server`' };
+            const health = this.vibeVoiceAsr ? await this.vibeVoiceAsr.health().catch(() => null) : null;
+            if (!health) {
+              return { ok: false, error: 'VibeVoice-ASR not running — start `npm run vibevoice:asr-server`' };
+            }
+            if (health.state === 'loading') {
+              return { ok: false, status: 'degraded', detail: 'VibeVoice-ASR loading — model downloading/loading (first run is ~17 GB)' };
+            }
+            if (health.state === 'error') {
+              return { ok: false, error: `VibeVoice-ASR failed to load: ${health.error ?? 'unknown error'}` };
+            }
+            return { ok: true, detail: `VibeVoice-ASR ready on ${health.device ?? 'auto'}` };
           },
           cable: async () => {
             const cable = config.meeting.audioCable ?? 'none';
@@ -1340,6 +1347,7 @@ export class UmbraOS {
   // ── Voice-to-text (STT) ───────────────────────────────────
 
   async getVoiceStatus(): Promise<any> {
+    const asrHealth = this.vibeVoiceAsr ? await this.vibeVoiceAsr.health().catch(() => null) : null;
     return {
       enabled: this.speechToText?.available ?? false,
       provider: this.speechToText?.provider ?? 'none',
@@ -1348,7 +1356,14 @@ export class UmbraOS {
         provider: this.configManager.raw.voice.asrProvider ?? 'none',
         url: this.configManager.raw.voice.vibevoiceAsrUrl,
         model: this.configManager.raw.voice.vibevoiceAsrModel,
-        running: this.vibeVoiceAsr ? await this.vibeVoiceAsr.isRunning().catch(() => false) : false,
+        ...(asrHealth
+          ? {
+              ok: asrHealth.ok,
+              state: asrHealth.state,
+              device: asrHealth.device,
+              error: asrHealth.error,
+            }
+          : {}),
       },
       health: this.voiceStackHealth ? this.voiceStackHealth.snapshot() : null,
     };

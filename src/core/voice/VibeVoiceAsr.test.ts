@@ -44,6 +44,20 @@ describe('VibeVoiceAsr', () => {
     expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:17500/health', expect.objectContaining({}));
   });
 
+  it('health returns the full report and distinguishes loading from ready', async () => {
+    const fetchFn = jest.fn().mockResolvedValue(jsonResponse({ ok: false, state: 'loading', device: 'cpu' }));
+    const asr = new VibeVoiceAsr({ fetchFn: fetchFn as any });
+    expect(await asr.health()).toEqual({ ok: false, state: 'loading', device: 'cpu' });
+    expect(await asr.isRunning()).toBe(false);
+  });
+
+  it('health returns null when the server is unreachable', async () => {
+    const fetchFn = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    const asr = new VibeVoiceAsr({ fetchFn: fetchFn as any });
+    expect(await asr.health()).toBeNull();
+    expect(await asr.isRunning()).toBe(false);
+  });
+
   it('transcribe posts multipart audio and returns segments', async () => {
     const fetchFn = jest.fn().mockResolvedValue(jsonResponse({
       segments: [{ speaker_id: 'SPEAKER_00', start_time: 0, end_time: 1.5, text: 'hey' }],

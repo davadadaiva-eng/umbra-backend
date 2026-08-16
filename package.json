@@ -12,7 +12,8 @@
     "setup": "ts-node scripts/setup.ts",
     "vibevoice:install": "bash scripts/vibevoice-install.sh",
     "vibevoice:asr-download": "bash scripts/vibevoice-asr-download.sh",
-    "vibevoice:asr-server": "bash scripts/vibevoice-asr-server.sh"
+    "vibevoice:asr-server": "bash scripts/vibevoice-asr-server.sh",
+    "vibevoice:asr-transcribe": "bash scripts/vibevoice-asr-transcribe.sh"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

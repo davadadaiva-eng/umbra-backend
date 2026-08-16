@@ -38,6 +38,8 @@ export interface ComponentProbe {
   ok: boolean;
   detail?: string;
   error?: string;
+  /** Override the derived status (e.g. 'degraded' while a model is loading). */
+  status?: 'ok' | 'degraded' | 'error';
 }
 
 export type ComponentProbeFn = () => Promise<ComponentProbe>;
@@ -87,7 +89,7 @@ async function probeResult(component: VoiceStackComponent, configured: boolean, 
     return {
       ...base,
       ok: result.ok,
-      status: result.ok ? 'ok' : 'error',
+      status: result.status ?? (result.ok ? 'ok' : 'error'),
       detail: result.detail,
       error: result.error,
       checkedAt: Date.now(),

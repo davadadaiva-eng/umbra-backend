@@ -37,13 +37,23 @@ export class VibeVoiceAsr {
   }
 
   async isRunning(): Promise<boolean> {
+    const health = await this.health();
+    return health?.ok === true;
+  }
+
+  /**
+   * Fetch the server's health report. Returns null when the server is
+   * unreachable; otherwise { ok, state: 'loading'|'ready'|'error', model,
+   * device, error }. The server answers while the model is still
+   * downloading/loading, so `state` distinguishes those phases.
+   */
+  async health(): Promise<{ ok: boolean; state: string; model?: string; device?: string; error?: string | null } | null> {
     try {
       const res = await this.request(`${this.baseUrl}/health`, {}, 3000);
-      if (!res.ok) return false;
-      const body = (await res.json()) as { ok?: boolean };
-      return body.ok === true;
+      if (!res.ok) return null;
+      return (await res.json()) as { ok: boolean; state: string; model?: string; device?: string; error?: string | null };
     } catch {
-      return false;
+      return null;
     }
   }
 

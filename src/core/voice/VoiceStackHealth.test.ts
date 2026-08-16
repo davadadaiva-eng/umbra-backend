@@ -63,6 +63,18 @@ describe('VoiceStackHealth', () => {
     expect(report.components.find(c => c.component === 'tts')!.status).toBe('degraded');
   });
 
+  it('honors a probe status override (e.g. degraded while loading)', async () => {
+    const h = make(
+      { asrProvider: 'vibevoice' },
+      { asr: async () => ({ ok: false, status: 'degraded', detail: 'model downloading' }) },
+    );
+    const report = await h.refresh();
+    expect(report.ok).toBe(false);
+    const asr = report.components.find(c => c.component === 'asr')!;
+    expect(asr.status).toBe('degraded');
+    expect(asr.detail).toContain('downloading');
+  });
+
   it('guards against a throwing probe', async () => {
     const h = make(
       { sttProvider: 'whisper-local' },
