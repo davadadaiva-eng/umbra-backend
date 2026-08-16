@@ -143,10 +143,14 @@ def load_models():
 
     print("[whisper-asr] loading speechbrain ECAPA speaker encoder", flush=True)
     from speechbrain.inference.speaker import EncoderClassifier
+    from speechbrain.utils.fetching import LocalStrategy
 
+    # COPY instead of the default SYMLINK: Windows can't create symlinks
+    # without Developer Mode/admin, which crashed the loader.
     encoder = EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
         savedir=os.path.join(tempfile.gettempdir(), "umbra-ecapa"),
+        local_strategy=LocalStrategy.COPY,
     )
     return whisper, encoder
 
