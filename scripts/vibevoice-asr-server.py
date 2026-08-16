@@ -15,7 +15,8 @@ Endpoints:
 
 Run via `npm run vibevoice:asr-server` (scripts/vibevoice-asr-server.sh), which
 activates the VibeVoice venv and launches this script. Model weights are
-downloaded from Hugging Face on first load (~4.6 GB — a GPU is recommended).
+downloaded from Hugging Face on first load (~17 GB — a GPU is recommended);
+pre-download them with `npm run vibevoice:asr-download`.
 """
 import argparse
 import json

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Launch the VibeVoice-ASR diarization server for Umbra.
+# Pre-download the VibeVoice-ASR model (microsoft/VibeVoice-ASR, ~17 GB) into
+# the Hugging Face cache so the ASR server doesn't download on first load.
 #
-#   npm run vibevoice:asr-server [-- --device cuda --port 17500]
+#   npm run vibevoice:asr-download
 #
-# The VibeVoice repo must be cloned at external/VibeVoice and its venv built
-# (npm run vibevoice:install). The model (microsoft/VibeVoice-ASR, ~17 GB)
-# downloads from Hugging Face on first load — a GPU is strongly recommended.
-# Pre-download it with 'npm run vibevoice:asr-download'.
+# Safe to interrupt and re-run: downloads resume from cached .incomplete blobs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,4 +27,9 @@ else
   exit 1
 fi
 
-exec python "$SCRIPT_DIR/vibevoice-asr-server.py" "$@"
+# Force the plain HTTP downloader (Xet and hf_transfer stall on some links).
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_ENABLE_HF_TRANSFER=0
+export PYTHONIOENCODING=utf-8
+
+exec python "$SCRIPT_DIR/vibevoice-asr-download.py" "$@"
