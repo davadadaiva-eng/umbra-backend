@@ -26,6 +26,11 @@ import time
 # downloads reliably and resumes from .incomplete blobs.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+# Bump the stream read timeout: the default is 10s, which a slow/flaky link
+# trips constantly ("Read timed out" mid-shard). 120s tolerates stalls while
+# still resetting dead connections fast enough to resume with a fresh one.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "120")
 
 from huggingface_hub import hf_hub_download  # noqa: E402
 
@@ -47,7 +52,7 @@ FILES = [
 ]
 
 
-def _download_with_retry(fname: str, attempts: int = 8, base_delay: float = 5.0) -> str:
+def _download_with_retry(fname: str, attempts: int = 40, base_delay: float = 5.0) -> str:
     """hf_hub_download with retry/backoff for flaky links.
 
     hf_hub_download resumes from .incomplete blobs, so a retry after a dropped

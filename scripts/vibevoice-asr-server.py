@@ -38,6 +38,9 @@ from pathlib import Path
 # (imported below) sets the same defaults and provides the reliable fetch loop.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+# Default stream read timeout is 10s, which a slow/flaky link trips constantly.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "120")
 
 REPO = Path(__file__).resolve().parents[1] / "external" / "VibeVoice"
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -198,9 +201,10 @@ async def transcribe_endpoint(audio: UploadFile = File(...), context: str = Form
 
 
 def _load_worker():
-    # Retry the whole load a few times: the ~17 GB download can drop a chunk on
-    # flaky links, and hf_hub_download resumes, so a retry continues in place.
-    attempts = 6
+    # Retry the whole load until it succeeds: the ~17 GB download can drop a
+    # chunk on flaky links, and hf_hub_download resumes, so a retry continues
+    # in place. Capped exponential backoff avoids hot-looping while staying alive.
+    attempts = 1000
     delay = 15.0
     last_error = None
     for n in range(1, attempts + 1):
