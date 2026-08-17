@@ -71,4 +71,32 @@ describe('GlobalHotkey', () => {
     expect(cmd).toHaveBeenCalledWith('finish this');
     eventBus.off('overlay:command', cmd);
   });
+
+  it('fires onPress and onRelease on the edges', async () => {
+    const onPress = jest.fn();
+    const onRelease = jest.fn();
+    let down = false;
+    const hk = new GlobalHotkey({
+      combo: 'Ctrl+Shift+Space',
+      check: async () => down,
+      pollMs: 1000,
+      onPress,
+      onRelease,
+    });
+
+    down = true;
+    await hk.poll();
+    expect(onPress).toHaveBeenCalledTimes(1);
+    expect(onRelease).not.toHaveBeenCalled();
+
+    // Still held — no repeat press and no release.
+    await hk.poll();
+    expect(onPress).toHaveBeenCalledTimes(1);
+    expect(onRelease).not.toHaveBeenCalled();
+
+    down = false;
+    await hk.poll();
+    expect(onRelease).toHaveBeenCalledTimes(1);
+    expect(onPress).toHaveBeenCalledTimes(1);
+  });
 });

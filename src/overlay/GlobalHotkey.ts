@@ -59,6 +59,10 @@ export interface GlobalHotkeyOptions {
   event?: 'overlay:toggle' | 'overlay:command';
   /** Command text for the 'overlay:command' event. */
   command?: string;
+  /** Called on the rising edge (combo pressed). */
+  onPress?: () => void;
+  /** Called on the falling edge (combo released after a press). */
+  onRelease?: () => void;
   /** Poll interval in ms (default 200). */
   pollMs?: number;
   /** Injectable key-state check for tests (defaults to NativeCore.isKeyDown). */
@@ -71,6 +75,8 @@ export class GlobalHotkey {
   private command?: string;
   private pollMs: number;
   private timer?: NodeJS.Timeout;
+  private onPress?: () => void;
+  private onRelease?: () => void;
   private pressed = false;
   private running = false;
 
@@ -80,6 +86,8 @@ export class GlobalHotkey {
     this.check = buildKeyCheck(vks, options.check);
     this.event = options.event ?? 'overlay:toggle';
     this.command = options.command;
+    this.onPress = options.onPress;
+    this.onRelease = options.onRelease;
     this.pollMs = options.pollMs ?? 200;
   }
 
@@ -108,6 +116,7 @@ export class GlobalHotkey {
     const down = await this.check().catch(() => false);
     if (down && !this.pressed) {
       this.pressed = true;
+      this.onPress?.();
       if (this.event === 'overlay:toggle') {
         eventBus.emit('overlay:toggle');
       } else {
@@ -115,7 +124,10 @@ export class GlobalHotkey {
       }
       return true;
     }
-    if (!down) this.pressed = false;
+    if (!down && this.pressed) {
+      this.pressed = false;
+      this.onRelease?.();
+    }
     return false;
   }
 }
