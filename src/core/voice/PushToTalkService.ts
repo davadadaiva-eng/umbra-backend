@@ -5,10 +5,12 @@
  * Flow (wired in the composition root):
  *   GlobalHotkey press   → service.start()  → recorder starts capturing
  *   GlobalHotkey release → service.stop()   → recorder stops → STT transcribes
- *     → SkillRouter routes the intent → AgentRuntime.submitTask → beep
+ *     → SkillRouter routes the intent → AgentRuntime.submitTask → spoken ack
+ *     ("On it — …" via the injected TTS engine) + beep
  *
- * Every collaborator is injected (recorder, STT, router, submitTask, beep),
- * so the class is fully unit-testable with mocks — no OS audio, no network.
+ * Every collaborator is injected (recorder, STT, router, submitTask, speak,
+ * beep), so the class is fully unit-testable with mocks — no OS audio, no
+ * network.
  *
  * The recorder is a small interface on purpose: the meeting loopback recorder
  * satisfies it, and a mic-capture recorder can be swapped in without touching
@@ -36,6 +38,12 @@ export interface PushToTalkDeps {
   stt: PushToTalkStt;
   router: PushToTalkRouter;
   submitTask: (description: string) => Promise<string> | string;
+  /**
+   * Spoken acknowledgement after a task is submitted (e.g. "On it — …"
+   * via the configured TTS engine). Best-effort: failures are logged, never
+   * propagated — a TTS outage must not fail the voice command.
+   */
+  speak?: (text: string) => Promise<unknown> | unknown;
   /** Called after a task is submitted (e.g. a confirmation beep). */
   confirm?: () => void;
   /** Capture-format hint passed to the STT provider (default 'wav'). */
@@ -92,6 +100,15 @@ export class PushToTalkService {
         getLogger().warn({ err }, 'Push-to-talk intent routing failed — using raw transcript');
       }
       const taskId = await this.deps.submitTask(description);
+      // Spoken acknowledgement closes the voice loop ("tap to listen" hears
+      // the assistant answer back, not just a beep). Best-effort by design.
+      if (this.deps.speak) {
+        try {
+          await this.deps.speak(`On it — ${description}`);
+        } catch (err) {
+          getLogger().warn({ err }, 'Push-to-talk spoken confirmation failed');
+        }
+      }
       this.deps.confirm?.();
       getLogger().info({ taskId, text: text.slice(0, 120) }, 'Push-to-talk submitted task');
     } catch (err) {

@@ -98,4 +98,50 @@ describe('PushToTalkService', () => {
     await svc.stop();
     expect(deps.recorder.stop).not.toHaveBeenCalled();
   });
+
+  it('speaks a spoken acknowledgement with the routed description', async () => {
+    const speak = jest.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      speak,
+      router: { route: jest.fn().mockResolvedValue('travel:book_flight') },
+    });
+    const svc = new PushToTalkService(deps);
+
+    await svc.start();
+    await svc.stop();
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenCalledWith('On it — travel:book_flight');
+    expect(deps.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('speaks the raw transcript when the router returns nothing', async () => {
+    const speak = jest.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({ speak });
+    const svc = new PushToTalkService(deps);
+
+    await svc.start();
+    await svc.stop();
+    expect(speak).toHaveBeenCalledWith('On it — book a flight to paris');
+  });
+
+  it('never fails the pipeline when the spoken acknowledgement errors', async () => {
+    const speak = jest.fn().mockRejectedValue(new Error('SAPI unavailable'));
+    const deps = makeDeps({ speak });
+    const svc = new PushToTalkService(deps);
+
+    await svc.start();
+    await expect(svc.stop()).resolves.toBeUndefined();
+    expect(deps.submitTask).toHaveBeenCalledWith('book a flight to paris');
+    expect(deps.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('submits silently when no TTS engine is configured', async () => {
+    const deps = makeDeps();
+    const svc = new PushToTalkService(deps);
+
+    await svc.start();
+    await svc.stop();
+    expect(deps.submitTask).toHaveBeenCalledWith('book a flight to paris');
+    expect(deps.confirm).toHaveBeenCalledTimes(1);
+  });
 });

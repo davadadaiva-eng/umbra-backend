@@ -29,6 +29,7 @@ import { InProcessAgent } from './InProcessAgent';
 import { eventBus } from '../EventBus';
 import { getLogger } from '../Logger';
 import { InjectionGuard } from './InjectionGuard';
+import { validatePlanDag, groupPlanWaves } from './planDag';
 export class AgentRuntime {
   private llm: LLMConnector;
   private planner: TaskPlanner;
@@ -59,6 +60,8 @@ export class AgentRuntime {
   private inProcess?: InProcessAgent;
   private activeTasks: Map<string, Task> = new Map();
   private maxSteps: number = 15;
+  /** Cap on how many independent plan steps may execute in parallel. */
+  private maxParallelSteps: number = 4;
   /** Durable task queue — enables cross-restart (and cross-node) resume. */
   private store?: TaskStore;
   private nodeRole: 'desktop' | 'cloud' = 'desktop';
@@ -105,6 +108,8 @@ export class AgentRuntime {
     nodeRole?: 'desktop' | 'cloud';
     /** Injection guard override (e.g. wired to the audit vault) — defaults to a standalone guard. */
     injectionGuard?: InjectionGuard;
+    /** Cap on concurrent plan steps in a parallel wave (default 4). */
+    maxParallelSteps?: number;
   }): void {
     if (subsystems.swarm) this.swarm = subsystems.swarm;
     if (subsystems.healer) this.healer = subsystems.healer;
@@ -129,6 +134,7 @@ export class AgentRuntime {
     if (subsystems.taskStore) this.store = subsystems.taskStore;
     if (subsystems.nodeRole) this.nodeRole = subsystems.nodeRole;
     if (subsystems.injectionGuard) this.injectionGuard = subsystems.injectionGuard;
+    if (subsystems.maxParallelSteps !== undefined) this.maxParallelSteps = subsystems.maxParallelSteps;
   }
 
   async submitTask(description: string, priority: number = 0): Promise<Task> {
@@ -244,6 +250,14 @@ export class AgentRuntime {
     if (!task.startedAt) task.startedAt = new Date();
     this.persist(task);
 
+    // Fresh plans run as a dependency DAG: independent steps execute in
+    // parallel waves. Resumed plans (checkpointed mid-run) keep the
+    // sequential loop — the durable checkpoint only records a contiguous
+    // count, so partial-wave state cannot be reconstructed safely.
+    if (start === 0 && (await this.runPlanWaves(task))) {
+      return;
+    }
+
     for (let i = start; i < plan.length; i++) {
       if (steps.length >= this.maxSteps) {
         getLogger().warn({ taskId: task.id, maxSteps: this.maxSteps }, 'Task step budget exhausted');
@@ -291,6 +305,96 @@ export class AgentRuntime {
     eventBus.emit('task:completed', task.id, result);
 
     await this.recordExecution(task, steps);
+  }
+
+  /**
+   * Execute a fresh plan as a dependency DAG (wave dispatch): every wave
+   * holds the steps whose dependencies all completed earlier, and the steps
+   * in a wave run concurrently — capped by maxParallelSteps and the metering
+   * tier's session limit (free = 1, so free plans stay sequential). Failed
+   * steps heal before the next wave starts; an invalid DAG (missing
+   * dependency / cycle) falls back to the sequential loop.
+   *
+   * @returns true when the plan was fully handled (finished, failed,
+   *   cancelled, or budget-exhausted); false to run sequentially instead.
+   */
+  private async runPlanWaves(task: Task): Promise<boolean> {
+    const plan = task.plan!;
+    const steps = task.steps ?? [];
+    const dagError = validatePlanDag(plan);
+    if (dagError) {
+      getLogger().warn({ taskId: task.id, error: dagError }, 'Plan DAG invalid — falling back to sequential execution');
+      return false;
+    }
+    const parallel = Math.min(
+      this.maxParallelSteps,
+      this.metering?.limits.maxConcurrentSessions ?? this.maxParallelSteps,
+    );
+    const results: (TaskStep | undefined)[] = Array.from({ length: plan.length });
+    let executedCount = 0;
+
+    for (const wave of groupPlanWaves(plan)) {
+      if (executedCount >= this.maxSteps) {
+        getLogger().warn({ taskId: task.id, maxSteps: this.maxSteps }, 'Task step budget exhausted');
+        break;
+      }
+      if (this.consent && (await this.consent.checkEmergencyStop())) {
+        task.status = 'cancelled';
+        task.error = 'Emergency stop armed';
+        eventBus.emit('task:cancelled', task.id);
+        this.persist(task);
+        return true;
+      }
+
+      const runnable = wave.slice(0, this.maxSteps - executedCount);
+      for (let i = 0; i < runnable.length; i += parallel) {
+        const chunk = runnable.slice(i, i + parallel);
+        const executed = await Promise.all(chunk.map(idx => this.executeStep(task, plan[idx], idx)));
+        chunk.forEach((idx, k) => { results[idx] = executed[k]; });
+        executedCount += chunk.length;
+        // Keep task.steps in plan order + checkpoint after each chunk so the
+        // durable queue holds a contiguous resume point.
+        steps.length = 0;
+        for (let j = 0; j < plan.length; j++) if (results[j]) steps.push(results[j]!);
+        task.completedStepCount = executedCount;
+        this.persist(task);
+      }
+
+      // Heal failed steps (plan order) before dependent waves start.
+      for (const idx of runnable) {
+        const step = results[idx];
+        if (!step || !step.error) continue;
+        task.status = 'healing';
+        this.persist(task);
+        const healed = await this.attemptHealing(task, plan[idx]);
+        if (!healed) {
+          task.status = 'failed';
+          task.error = step.error;
+          eventBus.emit('task:failed', task.id, step.error);
+          return true;
+        }
+        task.status = 'executing';
+      }
+    }
+
+    steps.length = 0;
+    for (let j = 0; j < plan.length; j++) if (results[j]) steps.push(results[j]!);
+    task.completedStepCount = plan.length;
+    this.persist(task);
+
+    const result: TaskResult = {
+      summary: `Completed: ${task.description}`,
+      output: null,
+      steps,
+      totalTimeMs: Date.now() - (task.startedAt?.getTime() ?? Date.now()),
+    };
+    task.status = 'completed';
+    task.completedAt = new Date();
+    task.result = result;
+    this.persist(task);
+    eventBus.emit('task:completed', task.id, result);
+    await this.recordExecution(task, steps);
+    return true;
   }
 
   private persist(task: Task): void {

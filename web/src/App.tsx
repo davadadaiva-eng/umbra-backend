@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, Menu, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
 
 const VIDEO_URL =
   'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260803_192301_9231ed6b-c55c-4a48-909c-4ebe11cf2e11.mp4'
 
-const NAV_LINKS = ['Modules', 'Clientele', 'Solutions', 'Billing']
+
 
 const GRADIENT = '[background:linear-gradient(to_bottom,#2B2B2B,#101010)]'
 
@@ -50,22 +50,10 @@ export default function App() {
               <span className="text-lg font-semibold">umbra</span>
             </div>
 
-            {/* Desktop nav */}
-            <div className="hidden items-center gap-3 md:flex">
-              <div className="flex items-center gap-1 rounded-full bg-white/10 px-1.5 py-1.5 backdrop-blur-lg">
-                {NAV_LINKS.map((link) => (
-                  <a
-                    key={link}
-                    href="#"
-                    className="flex items-center gap-1 rounded-full px-4 py-1.5 text-sm font-medium text-white/80 transition-colors hover:bg-white/10 hover:text-white"
-                  >
-                    {link}
-                    {link === 'Solutions' && <ChevronDown className="h-3.5 w-3.5" />}
-                  </a>
-                ))}
-              </div>
+            {/* Desktop CTA */}
+            <div className="hidden md:block">
               <button
-                className={`self-stretch rounded-full px-5 text-sm font-medium text-white transition-opacity hover:opacity-90 ${GRADIENT}`}
+                className={`rounded-full px-5 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 ${GRADIENT}`}
               >
                 Get started
               </button>
@@ -106,21 +94,6 @@ export default function App() {
             open ? 'translate-x-0' : 'translate-x-full'
           }`}
         >
-          <div className="flex flex-col gap-2 px-6 pt-24">
-            {NAV_LINKS.map((link, i) => (
-              <a
-                key={link}
-                href="#"
-                className={`flex items-center justify-between rounded-xl px-4 py-3.5 text-base font-medium text-white/80 transition-all duration-300 hover:bg-white/10 hover:text-white ${
-                  open ? 'translate-x-0 opacity-100' : 'translate-x-6 opacity-0'
-                }`}
-                style={{ transitionDelay: `${(i + 1) * 60}ms` }}
-              >
-                {link}
-                {link === 'Solutions' && <ChevronDown className="h-3.5 w-3.5" />}
-              </a>
-            ))}
-          </div>
           <div className="mt-auto px-6 pb-10">
             <button
               className={`w-full rounded-full py-3.5 text-sm font-medium text-white transition-[opacity,transform] duration-[400ms] hover:opacity-90 ${GRADIENT} ${

@@ -2,12 +2,17 @@ import { KnowledgeGraph } from '../../knowledge/KnowledgeGraph';
 import { LLMConnector, LLMMessage } from './LLMConnector';
 import { VectorMemory } from '../memory/VectorMemory';
 import { getLogger } from '../Logger';
+import { normalizePlanSteps } from './planDag';
 
 export interface PlannedStep {
+  /** Stable id other steps can reference in dependsOn (defaults to `step-<n>`). */
+  id?: string;
   description: string;
   action: string;
   params: Record<string, unknown>;
   requiresKnowledge: string[];
+  /** Ids of steps that must finish first; absent = may run in parallel. */
+  dependsOn?: string[];
 }
 
 /** Every action the agent runtime can execute — the planner may only emit these. */
@@ -100,6 +105,7 @@ Rules:
     - repo_open {repo} — open the repo folder in VS Code on Desktop 2 (the second Windows virtual desktop, so it doesn't disturb the user)
     "repo" is the repo name (e.g. umbra, umbra ui desktop app, agent research, video building) or a path inside it.
 12. To change code in a repo: repo_read the relevant file, repo_write the edited file, then repo_run a build/test command to verify. Never write code without verifying with repo_run.
+13. PARALLEL EXECUTION: a step with no dependsOn may run at the same time as other such steps. For research/aggregation tasks (compare facts, gather several sources, look up multiple things and summarize), emit the independent gather steps FIRST with no dependsOn, then ONE aggregation step whose dependsOn lists every gather step's id. Give every step a stable id ("step-1", "step-2", ...) and only set dependsOn where an earlier step's result is genuinely needed.
 
 Respond with a JSON object:
 {
@@ -108,10 +114,12 @@ Respond with a JSON object:
   "clarificationQuestion": "<question if confidence < 85>",
   "steps": [
     {
+      "id": "step-1",
       "description": "Step description",
       "action": "navigate|click|type|scroll|extract|wait|file_read|file_write|search|think|web_search|video_tool|video_produce|open_app|open_chrome|app_click|app_type|app_key|app_hotkey|app_scroll|read_screen|chrome_evaluate|repo_status|repo_list|repo_read|repo_write|repo_run|repo_open|skill|skill_learn|delegate|mcp_call",
       "params": { ... },
-      "requiresKnowledge": ["node-id"]
+      "requiresKnowledge": ["node-id"],
+      "dependsOn": ["step-1"]
     }
   ],
   "estimatedTimeMs": <total ms>
@@ -129,7 +137,7 @@ Respond with a JSON object:
       return {
         taskId,
         description,
-        steps: parsed.steps || [],
+        steps: normalizePlanSteps(parsed.steps || []),
         confidence: parsed.confidence || 50,
         needsClarification: parsed.needsClarification || false,
         clarificationQuestion: parsed.clarificationQuestion,

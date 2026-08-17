@@ -345,10 +345,14 @@ export type TaskStatus = 'pending' | 'planning' | 'executing' | 'healing' | 'com
 
 /** A single step in a task plan (mirrors TaskPlanner.PlannedStep). */
 export interface TaskPlanStep {
+  /** Stable id other steps can reference in dependsOn (defaults to `step-<n>`). */
+  id?: string;
   description: string;
   action: string;
   params: Record<string, unknown>;
   requiresKnowledge: string[];
+  /** Ids of steps that must finish first; absent = may run in parallel. */
+  dependsOn?: string[];
 }
 
 export interface Task {
