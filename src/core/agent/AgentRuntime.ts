@@ -226,7 +226,12 @@ export class AgentRuntime {
       eventBus.emit('task:failed', task.id, err.message);
     } finally {
       if (sessionHeld) this.metering?.closeSession();
-      if (this.isTerminal(task)) this.store?.remove(task.id);
+      // Persist the terminal state so the durable queue holds an accurate
+      // record. Keep failed/cancelled tasks archived so retryTask can resume
+      // the plan after a restart — only completed tasks leave the queue (they
+      // live on in recall/memory).
+      if (this.isTerminal(task)) this.persist(task);
+      if (task.status === 'completed') this.store?.remove(task.id);
     }
   }
 
@@ -711,7 +716,7 @@ export class AgentRuntime {
           }
         : undefined,
     };
-    this.inProcess = new InProcessAgent({ llm: this.llm, tools, timeoutMs });
+    this.inProcess = new InProcessAgent({ llm: this.llm, tools, timeoutMs, injectionGuard: this.injectionGuard });
     return this.inProcess;
   }
 
@@ -723,7 +728,11 @@ export class AgentRuntime {
     const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
     await this.desktop2.executeAction('navigate', { url });
     getLogger().info({ query, url }, 'Agent: opened web search');
-    return `Opened web search for "${query}"`;
+    // The search-results page is untrusted content from the open web — scrub
+    // it before it flows into the planner/LLM so a poisoned result can't
+    // hijack the task.
+    const pageText = await this.desktop2.extract();
+    return `Opened web search for "${query}"\n${this.injectionGuard.scrub(pageText, 'web-search').text}`;
   }
 
   private async thinkStep(instruction: string, params: Record<string, unknown>): Promise<string> {
@@ -1116,14 +1125,48 @@ Relevant knowledge: ${contextBlock}` },
     const task = this.activeTasks.get(taskId);
     if (task) {
       task.status = 'cancelled';
-      this.persist(task);
-      this.store?.remove(task.id);
+      this.persist(task); // kept in the durable queue so it can be retried later
       eventBus.emit('task:cancelled', taskId);
     }
   }
 
   getActiveTasks(): Task[] {
     return Array.from(this.activeTasks.values()).filter(t => t.status === 'pending' || t.status === 'planning' || t.status === 'executing' || t.status === 'healing');
+  }
+
+  /**
+   * Retry a task that ended in a terminal state. Failed/cancelled tasks are
+   * archived in the durable queue (only completed tasks are removed), so the
+   * original plan is found even after a restart — it is re-submitted under the
+   * same id and the resume path continues from the checkpoint without
+   * re-planning. If the original is unknown, a new task is created from the
+   * description.
+   */
+  async retryTask(taskId: string, description?: string, priority: number = 0): Promise<Task> {
+    let original = this.activeTasks.get(taskId) ?? this.store?.loadAll().find(t => t.id === taskId);
+    if (original && (original.status !== 'failed' && original.status !== 'cancelled')) {
+      original = undefined; // only terminal tasks can be retried
+    }
+    const desc = original?.description ?? description ?? '';
+    if (!desc) throw new Error('No description available to retry this task');
+
+    if (original) {
+      // Re-submit under the same id: executeTask sees the existing plan and
+      // resumes from the checkpoint instead of re-planning from scratch.
+      original.status = 'pending';
+      original.error = undefined;
+      original.completedStepCount = 0;
+      this.activeTasks.set(original.id, original);
+      this.persist(original);
+      eventBus.emit('task:created', original.id);
+      getLogger().info({ taskId: original.id }, 'Task retried');
+      this.executeTask(original).catch(err => {
+        getLogger().error({ taskId: original.id, err }, 'Retried task execution failed');
+      });
+      return original;
+    }
+
+    return this.submitTask(desc, priority);
   }
 
   getTask(taskId: string): Task | undefined {

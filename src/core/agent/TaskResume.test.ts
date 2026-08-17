@@ -118,4 +118,70 @@ describe('AgentRuntime durable resume', () => {
     expect(store.loadUnfinished()).toHaveLength(0);
     expect(done?.status === 'completed' || done?.result !== undefined).toBe(true);
   });
+
+  it('retries a failed task under its own id and re-runs the plan', async () => {
+    const store = new TaskStore(makeTempDir('retry-task'));
+    const task = makeUnfinishedTask({ status: 'failed', error: 'boom' });
+    store.save(task); // a failed task still lives in the durable queue
+    const { runtime } = makeRuntime(store);
+
+    const retried = await runtime.retryTask(task.id, task.description);
+    expect(retried.id).toBe(task.id);
+    // Execution starts immediately (fire-and-forget), so the task may already
+    // be past 'pending' by the time the promise resolves.
+    expect(['pending', 'planning', 'executing']).toContain(retried.status);
+    expect(retried.error).toBeUndefined();
+
+    await new Promise(r => setTimeout(r, 80));
+    // The retried task ran to completion through the resume path.
+    expect(store.loadUnfinished()).toHaveLength(0);
+    const done = runtime.getTask(task.id);
+    expect(done?.status === 'completed' || done?.status === 'failed').toBe(true);
+  });
+
+  it('creates a new task when the original is not known and only a description is given', async () => {
+    const store = new TaskStore(makeTempDir('retry-fresh'));
+    const { runtime } = makeRuntime(store);
+
+    const created = await runtime.retryTask('unknown-id', 'do the thing');
+    expect(created.id).not.toBe('unknown-id');
+    expect(created.description).toBe('do the thing');
+    // Execution starts immediately (fire-and-forget), so the task may already
+    // be past 'pending' by the time the promise resolves.
+    expect(['pending', 'planning', 'executing']).toContain(created.status);
+  });
+
+  it('archives failed tasks in the durable queue and retries them after a restart', async () => {
+    const store = new TaskStore(makeTempDir('retry-persist'));
+    // A task whose only step fails deterministically: file_read without a
+    // configured workspace throws 'Workspace not configured', and with no
+    // healer the failure is final.
+    const task = makeUnfinishedTask({
+      status: 'pending',
+      plan: [{ description: 'read missing file', action: 'file_read', params: { path: 'missing.txt' }, requiresKnowledge: [] }],
+    });
+    store.save(task);
+
+    // First run: executeTask's finally must NOT delete the failed task.
+    const runtimeA = makeRuntime(store).runtime;
+    await runtimeA.resumePendingTasks('desktop', 'ultimate');
+    await new Promise(r => setTimeout(r, 300));
+
+    const archived = store.loadAll().find(t => t.id === task.id);
+    expect(archived?.status).toBe('failed');
+    expect(archived?.error).toContain('Workspace not configured');
+
+    // Restart: a fresh runtime (empty in-memory map) finds the archived plan
+    // via the durable queue and re-submits under the same id.
+    const runtimeB = makeRuntime(store).runtime;
+    const retried = await runtimeB.retryTask(task.id, task.description);
+    expect(retried.id).toBe(task.id);
+
+    await new Promise(r => setTimeout(r, 80));
+    const after = runtimeB.getTask(task.id);
+    // The plan re-ran (and failed again — the workspace is still missing), so
+    // the task is executing or back to failed, and stays archived on disk.
+    expect(['executing', 'failed']).toContain(after?.status);
+    expect(store.loadAll().some(t => t.id === task.id && t.status === 'failed')).toBe(true);
+  });
 });

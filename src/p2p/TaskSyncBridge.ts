@@ -56,6 +56,12 @@ export interface TaskSyncBridgeOptions {
   includeDescription?: boolean;
   /** Label the executing node (default 'desktop'). */
   node?: 'desktop' | 'cloud';
+  /**
+   * Send a message to ONE device (wire to DeviceClient.relay). Used to push
+   * the full lifecycle of a remotely submitted task back to the originating
+   * device, so the phone that dispatched the work tracks it live.
+   */
+  relayTo?: (deviceId: string, msg: TaskSyncEvent) => void;
 }
 
 const LIFECYCLE_EVENTS: TaskLifecycleEvent[] = [
@@ -74,12 +80,26 @@ export class TaskSyncBridge {
   private node: 'desktop' | 'cloud';
   private started = false;
   private handlers: { ev: TaskLifecycleEvent; fn: (...args: unknown[]) => void }[] = [];
+  private relayTo?: (deviceId: string, msg: TaskSyncEvent) => void;
+  /** taskId → the device that submitted it (so its lifecycle relays home). */
+  private origins = new Map<string, string>();
 
   constructor(options: TaskSyncBridgeOptions) {
     this.broadcast = options.broadcast;
     this.getTask = options.getTask;
     this.includeDescription = options.includeDescription ?? true;
     this.node = options.node ?? 'desktop';
+    this.relayTo = options.relayTo;
+  }
+
+  /** Remember which device submitted a task, so its lifecycle relays home. */
+  registerOrigin(taskId: string, deviceId: string): void {
+    if (taskId && deviceId) this.origins.set(taskId, deviceId);
+  }
+
+  /** Forget the origin once the task reaches a terminal state. */
+  forgetOrigin(taskId: string): void {
+    this.origins.delete(taskId);
   }
 
   start(): void {
@@ -124,6 +144,18 @@ export class TaskSyncBridge {
     if (progress !== undefined) snapshot.progress = progress;
     if (extraError && !snapshot.error) snapshot.error = extraError;
 
-    this.broadcast({ t: 'task-event', event: ev, node: this.node, task: snapshot });
+    const payload: TaskSyncEvent = { t: 'task-event', event: ev, node: this.node, task: snapshot };
+    this.broadcast(payload);
+
+    // Push the same snapshot directly to the device that submitted the task
+    // (if any), so the phone tracks its own work live, not just the broadcast.
+    const origin = this.origins.get(taskId);
+    if (origin && this.relayTo) {
+      this.relayTo(origin, payload);
+      // Terminal states — drop the origin so the map doesn't grow unbounded.
+      if (ev === 'task:completed' || ev === 'task:failed' || ev === 'task:cancelled') {
+        this.origins.delete(taskId);
+      }
+    }
   }
 }

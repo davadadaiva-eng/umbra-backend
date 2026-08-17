@@ -11,6 +11,10 @@ export interface ApiServerDeps {
   chat(message: string, target?: string): Promise<unknown>;
   getTask(id: string): unknown;
   getActiveTasks(): unknown;
+  /** Cancel an in-flight task (consent-gated on the executing node). */
+  cancelTask?(taskId: string): Promise<unknown>;
+  /** Retry a failed/cancelled task (consent-gated on the executing node). */
+  retryTask?(taskId: string, description?: string): Promise<unknown>;
   executeDesktop2(action: string, params: Record<string, unknown>): Promise<string>;
   executeGhost(action: string, params: Record<string, unknown>): Promise<string>;
   captureGhost(): Promise<string | null>;
@@ -30,6 +34,14 @@ export interface ApiServerDeps {
   getMcpCatalog(opts?: { q?: string; category?: string; enabled?: boolean; limit?: number; offset?: number }): Promise<unknown>;
   connectMcp(id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }): Promise<unknown>;
   disconnectMcp(id: string): Promise<unknown>;
+  /** Start an OAuth connect flow for an `oauth` connector; returns { authorizeUrl, state }. */
+  beginMcpOauth(id: string, redirectUri?: string): Promise<unknown>;
+  /** OAuth callback completion — code + state (connector id recovered from state). */
+  completeMcpOauth(code: string, state: string): Promise<unknown>;
+  /** OAuth token status (masked — tokens never returned). */
+  getMcpOauthStatus(id: string): Record<string, unknown>;
+  /** Refresh an expiring OAuth token. */
+  refreshMcpOauth(id: string): Promise<unknown>;
   syncExternalConnectors(opts?: { maxPerSource?: number }): Promise<unknown>;
   getModelStatus(): Promise<unknown>;
   getPlanUsage(): Promise<unknown>;
@@ -37,6 +49,10 @@ export interface ApiServerDeps {
   configureProvider(patch: { provider?: string; endpoint?: string; apiKey?: string; models?: Record<string, string>; tier?: string }): Promise<unknown>;
   /** Activate a plan after payment (assigns the plan's token budget). */
   activatePlan(tier: string): Promise<unknown>;
+  /** Billing (Stripe) — create a checkout session for a plan tier; returns { url }. */
+  billingCreateCheckout(tier: string): Promise<unknown>;
+  /** Billing (Stripe) — verify + handle a webhook (raw body + signature header). */
+  billingHandleWebhook(rawBody: string, signature: string): Promise<unknown>;
   getProviderConfig(): Promise<unknown>;
   listOpenMontageTools(): Promise<unknown>;
   generateImage(prompt: string, opts?: { width?: number; height?: number; steps?: number }): Promise<unknown>;
@@ -174,6 +190,20 @@ export class ApiServer {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
     const route = `${req.method} ${url.pathname}`;
 
+    // Stripe webhooks must be verified over the RAW body (HMAC over the exact
+    // bytes), so handle this route before JSON parsing. Stripe retries non-2xx.
+    if (route === 'POST /api/billing/webhook') {
+      const rawBody = await this.readRawBody(req);
+      try {
+        const result = await this.deps.billingHandleWebhook(rawBody, String(req.headers['stripe-signature'] || ''));
+        this.sendJson(res, 200, result);
+      } catch (err: any) {
+        getLogger().warn({ err: err.message }, 'Billing webhook failed');
+        this.sendJson(res, 400, { error: err.message || 'Webhook failed' });
+      }
+      return;
+    }
+
     let body: Record<string, unknown> = {};
     if (req.method === 'POST' || req.method === 'PUT') {
       body = await this.readBody(req);
@@ -236,6 +266,19 @@ export class ApiServer {
         const priority = Number(body.priority || 0);
         const taskId = await this.deps.submitTask(description, priority);
         return { taskId };
+      }],
+      [/^POST \/api\/task\/([\w-]+)\/cancel$/, async (_url, _body, match) => {
+        if (!this.deps.cancelTask) throw new Error('cancelTask is not available on this node');
+        const taskId = match![1];
+        await this.deps.cancelTask(taskId);
+        return { cancelled: taskId };
+      }],
+      [/^POST \/api\/task\/([\w-]+)\/retry$/, async (_url, body, match) => {
+        if (!this.deps.retryTask) throw new Error('retryTask is not available on this node');
+        const taskId = match![1];
+        const description = body.description !== undefined ? String(body.description) : undefined;
+        const retried = await this.deps.retryTask(taskId, description);
+        return { taskId: retried && typeof retried === 'object' && 'id' in retried ? String((retried as { id: string }).id) : taskId };
       }],
       [/^POST \/api\/chat$/, async (_url, body) => {
         const message = String(body.message || body.text || '').trim();
@@ -385,6 +428,11 @@ export class ApiServer {
         if (!tier) throw new Error('tier is required');
         return this.deps.activatePlan(tier);
       }],
+      [/^GET \/api\/billing\/checkout$/, async url => {
+        const tier = url.searchParams.get('tier') || '';
+        if (!tier) throw new Error('tier is required');
+        return { checkout: await this.deps.billingCreateCheckout(tier) };
+      }],
       [/^POST \/api\/config\/provider$/, async (_url, body) => this.deps.configureProvider({
         provider: body.provider !== undefined ? String(body.provider) : undefined,
         endpoint: body.endpoint !== undefined ? String(body.endpoint) : undefined,
@@ -447,6 +495,27 @@ export class ApiServer {
           enabled: body.enabled !== undefined ? Boolean(body.enabled) : undefined,
         };
         return { connector: await this.deps.connectMcp(id, opts) };
+      }],
+      [/^POST \/api\/mcp\/oauth\/start$/, async (_url, body) => {
+        const id = String(body.id || '');
+        if (!id) throw new Error('id is required');
+        return { oauth: await this.deps.beginMcpOauth(id, body.redirectUri !== undefined ? String(body.redirectUri) : undefined) };
+      }],
+      [/^GET \/api\/mcp\/oauth\/callback$/, async url => {
+        const code = url.searchParams.get('code') || '';
+        const state = url.searchParams.get('state') || '';
+        if (!code || !state) throw new Error('code and state are required');
+        return { oauth: await this.deps.completeMcpOauth(code, state) };
+      }],
+      [/^GET \/api\/mcp\/oauth\/status$/, async url => {
+        const id = url.searchParams.get('id') || '';
+        if (!id) throw new Error('id is required');
+        return { oauth: this.deps.getMcpOauthStatus(id) };
+      }],
+      [/^POST \/api\/mcp\/oauth\/refresh$/, async (_url, body) => {
+        const id = String(body.id || '');
+        if (!id) throw new Error('id is required');
+        return { oauth: await this.deps.refreshMcpOauth(id) };
       }],
       [/^POST \/api\/mcp\/sync$/, async (_url, body) => {
         const maxPerSource = body.maxPerSource !== undefined ? Number(body.maxPerSource) : 100;
@@ -569,6 +638,21 @@ export class ApiServer {
       }
     }
     return null;
+  }
+
+  private readRawBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let data = '';
+      req.on('data', chunk => {
+        data += chunk;
+        if (data.length > MAX_BODY_BYTES) {
+          reject(new Error('Request body too large'));
+          req.destroy();
+        }
+      });
+      req.on('end', () => resolve(data));
+      req.on('error', reject);
+    });
   }
 
   private readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {

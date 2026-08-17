@@ -29,7 +29,7 @@ CORE IDEA
 TECH STACK
 ----------
 - Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
-- Jest (ts-jest) for tests — 48 suites, 372 tests, all green
+- Jest (ts-jest) for tests — 51 suites, 421 tests, all green
 - oxlint for linting — zero issues
 - better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
 - node-fetch-free: uses Node 18+ global fetch
@@ -82,7 +82,7 @@ HOW TO BUILD / TEST / RUN
 -------------------------
     npm install          # install deps
     npm run build        # tsc → dist/
-    npm test             # jest (372 tests today)
+    npm test             # jest (421 tests today)
     npm run lint         # oxlint
 
 Run requires either a local Ollama (free, default:
@@ -112,7 +112,7 @@ Generated with sane defaults by ConfigManager on first run. Key sections
     compiler                     — skill native backend (none | node | tcc | clang)
     shadow, meeting, telco, docker — feature toggles + provider settings
 
-WHAT IS DONE (state: build+tests+lint green, 372 tests / 48 suites)
+WHAT IS DONE (state: build+tests+lint green, 421 tests / 51 suites)
 -------------------------------------------------------------------
 1. Agent loop: planning (with clarification), step execution (browse, desktop,
    ghost real-desktop, files, repos, video tools, web search), self-healing,
@@ -176,6 +176,13 @@ WHAT IS DONE (state: build+tests+lint green, 372 tests / 48 suites)
     `cmd` through the hub to the desktop (executeGhost) and get the result
     back.    API: GET /api/devices, POST /api/devices/invite|join|revoke|send.
     Desktop joins the cloud with joinRemoteHub(code) + UMBRA_API_URL.
+    Plan device limit: free/byok/pro allow 1 registered device (the phone OR
+    the desktop), ultimate is unlimited — enforced at join time
+    (src/p2p/DevicePolicy), existing devices keep reconnecting, and the
+    allowance is reported as `deviceLimit` by GET /api/devices + the join
+    response. The phone PWA shows a "Plan & devices" card (PwaServer serves
+    /api/devices same-origin) with the limit, the registered count, and each
+    device's online status.
 14. Unified dispatch + voice: POST /api/chat {message, target?} is the "talk
     to Umbra" entry point. target 'auto' routes a task to an online desktop
     (via DeviceHub.request/reply) or runs it on this node (cloud agents); the
@@ -208,7 +215,12 @@ WHAT IS DONE (state: build+tests+lint green, 372 tests / 48 suites)
     Umbra can now SPEAK in meetings via Windows SAPI TTS (WindowsTts + the
     "say" order intent + POST /api/meeting/speak) when meeting.tts = local.
     `npm run setup` (scripts/setup.ts) interactively collects provider/key/
-    models/tier and live-validates the key. GitHub Actions CI runs
+    models/tier and live-validates the key — including a one-OpenRouter-key
+    convenience mode (`--openrouter-key` or `OPENROUTER_API_KEY`) that maps all
+    four paid routing slots + the free spillover to real OpenRouter model ids
+    with real per-1M pricing and reports the key's credit limit/remaining
+    balance; and all keys can be loaded from a single file with
+    `npm run setup -- --keys-file umbra-keys.json` (JSON or .env). GitHub Actions CI runs
     build+test+lint on Windows and Linux (.github/workflows/ci.yml).
 18. Microsoft VibeVoice voice AI: cloned into external/VibeVoice (git-ignored,
     sparse/blobless) and driven by src/core/voice/VibeVoiceTts.ts, which runs
@@ -276,6 +288,16 @@ WHAT IS DONE (state: build+tests+lint green, 372 tests / 48 suites)
     spend dashboard (budget by slot, remaining, metering). Anthropic calls
     mark the system prompt with cache_control: ephemeral so prompt caching
     actually engages and the assumed cache-hit pricing holds.
+25. Stripe billing: src/core/billing/StripeBilling is a zero-dependency
+    Stripe client (global fetch + crypto HMAC). GET /api/billing/checkout
+    ?tier=pro|ultimate creates a hosted Checkout Session (subscription mode,
+    price id from config billing.priceIds, tier in metadata); POST
+    /api/billing/webhook verifies the `stripe-signature` header over the raw
+    body (HMAC-SHA256, 5-min replay window) and on checkout.session.completed
+    calls the same activatePlan hook as POST /api/plan/activate — so a paid
+    checkout automatically enables routing + the pre-split $5/$10 token
+    budget + cloud continuation. Keys/price ids live in config.json or
+    UMBRA_STRIPE_* env vars (never in code); setup.ts collects them.
 
 HOW TO CONTINUE (remaining work — mostly user keys/hardware, not code)
 ----------------------------------------------------------------------
@@ -305,6 +327,9 @@ HOW TO CONTINUE (remaining work — mostly user keys/hardware, not code)
    runners) is DONE via .github/workflows/ci.yml.
 8. Video production: DONE — OpenMontage tools auto-discovered from
    external/OpenMontage and exposed as native MCP tools + an API listing.
+9. Payments: DONE — Stripe checkout + webhook wired to plan activation (see
+   item 25 above); shipping the hosted plans still needs the operator's real
+   Stripe keys + price ids (and the provider keys for the model slots).
 
 CONVENTIONS
 -----------

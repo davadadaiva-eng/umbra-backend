@@ -108,6 +108,24 @@ Every action also checks the emergency-stop file first.
 
 Errors: `{ "error": "<message>" }` with status 400/404/500.
 
+### Telco (SMS & calls — Telnyx)
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| GET | `/api/telco/status` | — | Settings with the API token masked: `{ enabled, provider, fromNumber, tokenConfigured }` |
+| POST | `/api/telco/configure` | `{ apiKey?, fromNumber?, messagingProfileId?, enabled? }` | Persist the Telnyx token + sender number + messaging profile (token stored vault-backed) |
+| POST | `/api/telco/sms` | `{ to, text, from? }` | Send an SMS. Returns `{ result }` |
+| POST | `/api/telco/call` | `{ to, from?, connectionUrl? }` | Initiate a voice call. Returns `{ result }` |
+
+### Docker workers
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| GET | `/api/docker/list` | — | Tracked worker containers: `{ containers: [] }` |
+| POST | `/api/docker/run` | `{ name, image, command?, env?, memoryLimitMb?, cpuQuotaPct? }` | Run a containerized skill worker. Returns `{ container }` |
+| POST | `/api/docker/stop` | `{ name }` | Stop a worker container. Returns `{ stopped }` |
+| POST | `/api/docker/remove` | `{ name }` | Remove a worker container. Returns `{ removed }` |
+
 ## WebSocket — `ws://127.0.0.1:8787/api/ws`
 
 On connect the server sends a full snapshot:

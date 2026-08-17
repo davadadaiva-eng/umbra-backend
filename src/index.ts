@@ -14,6 +14,7 @@ import { TaskStore } from './core/agent/TaskStore';
 import { HermesAgentBridge } from './core/agent/HermesAgent';
 import { WorkspaceFiles } from './core/agent/WorkspaceFiles';
 import { ReposManager } from './core/agent/ReposManager';
+import { InjectionGuard } from './core/agent/InjectionGuard';
 import { ConsentGate } from './core/agent/ConsentGate';
 import { ProactiveAgent } from './core/agent/ProactiveAgent';
 import { VirtualDisplayManager } from './core/workspace/VirtualDisplayManager';
@@ -71,7 +72,9 @@ import { P2PConnectionManager, P2PConnectionManagerOptions } from './p2p/P2PConn
 import { MeshBridge } from './p2p/MeshBridge';
 import { DeviceRegistry } from './p2p/DeviceRegistry';
 import { DeviceHub } from './p2p/DeviceHub';
+import { assertCanJoinDevice, deviceLimitLabel } from './p2p/DevicePolicy';
 import { DeviceClient } from './p2p/DeviceClient';
+import { TaskSyncBridge } from './p2p/TaskSyncBridge';
 import { PwaServer } from './mobile/PwaServer';
 import { GraphifyContextEngine } from './core/graphify/GraphifyContextEngine';
 import { SkillCompiler } from './core/skill/SkillCompiler';
@@ -84,15 +87,18 @@ import { McpRouter } from './core/mcp/McpRouter';
 import { McpHttpConnector } from './core/mcp/McpHttpConnector';
 import { McpServerEndpoint } from './core/mcp/McpServerEndpoint';
 import { ExternalRegistrySync } from './core/mcp/ExternalRegistrySync';
+import { OAuthConnector, OAuthTokenSet } from './core/mcp/OAuthConnector';
+import { MCP_CATALOG } from './core/mcp/McpCatalog';
 import { CredentialVault } from './core/vault/CredentialVault';
 import { LiveShadowEngine } from './core/shadow/LiveShadowEngine';
 import { MeetingAgent } from './core/meeting/MeetingAgent';
 import { TelnyxClient } from './core/telco/TelnyxClient';
 import { DockerDaemon } from './core/docker/DockerDaemon';
+import { StripeBilling } from './core/billing/StripeBilling';
 import { MeteringService } from './core/metering/MeteringService';
 import { ModelRouter, DEFAULT_ROUTING } from './core/metering/ModelRouter';
 import { RoutedLLMConnector } from './core/metering/RoutedLLMConnector';
-import { ModelProvider, PlanTier } from './types';
+import { ModelProvider, PlanTier, McpConnectorConfig, McpOauthClientConfig } from './types';
 import { ALL_SKILLS } from './core/skill/SkillStack';
 import { listSkillRepos } from './core/skill/SkillRepos';
 
@@ -142,6 +148,7 @@ export class UmbraOS {
   private deviceRegistry?: DeviceRegistry;
   private deviceHub?: DeviceHub;
   private deviceClient?: DeviceClient;
+  private taskSyncBridge?: TaskSyncBridge;
   private graphify!: GraphifyContextEngine;
   private skillCompiler!: SkillCompiler;
   private skillRecorder!: SkillRecorder;
@@ -151,6 +158,7 @@ export class UmbraOS {
   private mcpRouter!: McpRouter;
   private mcpExternal!: ExternalRegistrySync;
   private mcpServer!: McpServerEndpoint;
+  private oauth!: OAuthConnector;
   private hermes!: HermesAgentBridge;
   private credVault!: CredentialVault;
   private shadow?: LiveShadowEngine;
@@ -169,6 +177,7 @@ export class UmbraOS {
   private awareness?: ScreenAwareness;
   private telnyx!: TelnyxClient;
   private dockerDaemon!: DockerDaemon;
+  private billing?: StripeBilling;
   private metering!: MeteringService;
   private modelRouter!: ModelRouter;
   private startedAt: number = Date.now();
@@ -409,6 +418,10 @@ export class UmbraOS {
       autoDelegate: config.hermes.autoDelegate,
       taskStore: this.taskStore,
       nodeRole: this.role,
+      // Vault-backed injection guard: quarantined prompt-injection hits in
+      // untrusted observations (OCR, page text, tool results) are recorded in
+      // the tamper-evident audit log, not just logged to the console.
+      injectionGuard: new InjectionGuard({ vault: this.vault }),
     });
 
     // ── Deep Understanding (LLM-powered research & expansion) ─
@@ -472,6 +485,8 @@ export class UmbraOS {
       chat: (message, target) => this.dispatchTask(message, target || 'auto'),
       getTask: id => this.agent.getTask(id),
       getActiveTasks: () => this.agent.getActiveTasks(),
+      cancelTask: taskId => this.agent.cancelTask(taskId),
+      retryTask: (taskId, description) => this.agent.retryTask(taskId, description),
       executeDesktop2: (action, params) => this.executeDesktop2(action, params),
       executeGhost: (action, params) => this.executeGhost(action, params),
       captureGhost: () => this.captureGhost(),
@@ -491,12 +506,18 @@ export class UmbraOS {
       getMcpCatalog: opts => this.getMcpCatalog(opts),
       connectMcp: (id, opts) => this.connectMcp(id, opts),
       disconnectMcp: id => this.disconnectMcp(id),
+      beginMcpOauth: (id, redirectUri) => this.beginMcpOauth(id, redirectUri),
+      completeMcpOauth: (code, state) => this.completeMcpOauth(code, state),
+      getMcpOauthStatus: id => this.getMcpOauthStatus(id),
+      refreshMcpOauth: id => this.refreshMcpOauth(id),
       syncExternalConnectors: opts => this.syncExternalConnectors(opts),
       getModelStatus: () => this.getModelStatus(),
       getPlanUsage: () => this.getPlanUsage(),
       testLlm: () => this.testLlm(),
       configureProvider: patch => this.configureProvider(patch),
       activatePlan: tier => this.activatePlan(tier),
+      billingCreateCheckout: tier => this.billing!.createCheckoutSession(tier),
+      billingHandleWebhook: (rawBody, signature) => this.billing!.handleWebhook(rawBody, signature),
       getProviderConfig: () => this.getProviderConfig(),
       listOpenMontageTools: () => this.listOpenMontageTools(),
       generateImage: (prompt, opts) => this.generateImage(prompt, opts),
@@ -586,6 +607,7 @@ export class UmbraOS {
     // engine can call them through the same vault-gated router.
     this.mcpServer = new McpServerEndpoint(this.mcpRegistry, this.mcpRouter);
     this.mcpExternal = new ExternalRegistrySync(this.mcpRegistry, { dedupe: true });
+    this.oauth = new OAuthConnector();
 
     // ── P2P: pairing + signaling + PWA control plane — desktop only ──
     if (config.p2p.enabled && !this.headless) {
@@ -628,6 +650,11 @@ export class UmbraOS {
           };
         },
         onChat: (message, target) => this.dispatchTask(message, target || 'auto'),
+        getActiveTasks: () => this.agent.getActiveTasks(),
+        getTask: id => this.agent.getTask(id),
+        onCancelTask: taskId => this.agent.cancelTask(taskId),
+        onRetryTask: (taskId, description) => this.agent.retryTask(taskId, description),
+        getDeviceInfo: () => this.getDevices(),
       });
       this.pwa = pwa;
       pwa.start();
@@ -651,6 +678,19 @@ export class UmbraOS {
       this.deviceRegistry = new DeviceRegistry({ dataDir: config.paths.dataDir });
       this.deviceHub = new DeviceHub({ registry: this.deviceRegistry, port: config.devices.hubPort });
       this.deviceHub.start();
+      // Broadcast task lifecycle events to every paired device ("Portals"): a
+      // task started on the phone appears, updates, and can be cancelled on
+      // the desktop, and vice versa. Starts after the hub so connected devices
+      // receive snapshots as soon as they join.
+      this.taskSyncBridge = new TaskSyncBridge({
+        broadcast: msg => this.deviceHub?.broadcast(msg),
+        getTask: id => this.agent.getTask(id),
+        node: this.role,
+        // Also push each lifecycle snapshot directly to the device that
+        // submitted the task, so the phone tracks its own work live.
+        relayTo: (deviceId, msg) => this.deviceClient?.relay(deviceId, msg),
+      });
+      this.taskSyncBridge.start();
       this.startDeviceClient();
     }
 
@@ -719,6 +759,16 @@ export class UmbraOS {
     this.telnyx = new TelnyxClient({
       fromNumber: config.telco.fromNumber,
       vault: this.credVault,
+    });
+    // ── Billing (Stripe checkout + webhook) ─────────────────────
+    // Payment completes on Stripe's hosted checkout; the webhook verifies the
+    // signature and activates the plan (token budget auto-assigned by tier).
+    this.billing = new StripeBilling({
+      secretKey: config.billing.secretKey,
+      webhookSecret: config.billing.webhookSecret,
+      priceIds: config.billing.priceIds,
+      publicUrl: config.billing.publicUrl,
+      onPlanPaid: tier => this.activatePlan(tier),
     });
     this.dockerDaemon = new DockerDaemon({
       dryRun: !config.docker.enabled,
@@ -1214,6 +1264,105 @@ export class UmbraOS {
     this.mcpRegistry.remove(entry.id, entry.tool || 'invoke');
     getLogger().info({ id }, 'MCP connector disconnected');
     return { connector: entry, connected: false };
+  }
+
+  // ── OAuth connector flow (Gmail, Microsoft 365, Dropbox, …) ──
+
+  private oauthRedirectUri(): string {
+    return `${this.publicBaseUrl()}/api/mcp/oauth/callback`;
+  }
+
+  /** The catalog's credentialKey (e.g. 'gmail'), used to look up the OAuth client. */
+  private oauthKeyFor(id: string): string {
+    const entry = MCP_CATALOG.find(c => c.id === id);
+    return entry?.credentialKey || id;
+  }
+
+  private oauthClientFor(id: string): { key: string; client: McpOauthClientConfig } {
+    const key = this.oauthKeyFor(id);
+    const client = this.configManager.getMcpOauthClient(key);
+    if (!client) {
+      throw new Error(
+        `OAuth client not configured for "${key}" — register the app with the provider, then add mcp.oauthClients["${key}"] = { clientId }`,
+      );
+    }
+    return { key, client };
+  }
+
+  /** Start OAuth for an `oauth` connector: returns the authorize URL to open. */
+  async beginMcpOauth(id: string, redirectUri?: string): Promise<any> {
+    const entry = await this.configManager.upsertMcpConnector(id, {});
+    if (entry.authType !== 'oauth') throw new Error(`Connector "${id}" is not OAuth (authType=${entry.authType})`);
+    const { key, client } = this.oauthClientFor(id);
+    const started = this.oauth.begin(id, client, redirectUri || this.oauthRedirectUri());
+    return { connector: entry, key, authorizeUrl: started.authorizeUrl, state: started.state };
+  }
+
+  /** Complete OAuth: exchange the code, persist tokens, and enable the connector. */
+  async completeMcpOauth(code: string, state: string): Promise<any> {
+    const { key: id, tokens } = await this.oauth.complete(code, state);
+    const entry = await this.configManager.upsertMcpConnector(id, {});
+    if (entry.authType !== 'oauth') throw new Error(`Connector "${id}" is not OAuth (authType=${entry.authType})`);
+
+    this.storeOauthToken(this.oauthKeyFor(id), tokens);
+
+    // Enable + register the live binding now that credentials exist.
+    await this.configManager.upsertMcpConnector(id, { enabled: true });
+    this.registerConnectorBinding(entry);
+    return { connector: entry, connected: true, expiresAt: tokens.expiresAt };
+  }
+
+  /** Persist an OAuth token set in the vault (JSON blob under oauth:<key>). */
+  private storeOauthToken(key: string, tokens: OAuthTokenSet): void {
+    if (!this.credVault.isUnlocked) throw new Error('Vault locked — cannot store OAuth tokens');
+    const existing = this.credVault.find(`oauth:${key}`);
+    this.credVault.set(
+      { service: `oauth:${key}`, username: 'oauth-token', secret: JSON.stringify(tokens) },
+      existing?.id,
+    );
+  }
+
+  private readOauthToken(key: string): OAuthTokenSet | undefined {
+    if (!this.credVault.isUnlocked) return undefined;
+    const entry = this.credVault.find(`oauth:${key}`);
+    if (!entry) return undefined;
+    try { return JSON.parse(entry.secret) as OAuthTokenSet; } catch { return undefined; }
+  }
+
+  /** Live registry binding for a connector (same shape as connectMcp). */
+  private registerConnectorBinding(entry: McpConnectorConfig): void {
+    if (entry.baseUrl) {
+      this.mcpRegistry.register(entry.id, entry.tool || 'invoke', {
+        endpoint: entry.baseUrl,
+        credentialService: entry.credentialKey || entry.name,
+        apiKeyHeader: entry.apiKeyHeader,
+        authType: entry.authType,
+      });
+    }
+  }
+
+  /** Report connection state for an OAuth connector (tokens never exposed). */
+  getMcpOauthStatus(id: string): Record<string, unknown> {
+    const key = this.oauthKeyFor(id);
+    const tokens = this.readOauthToken(key);
+    if (!tokens) return { connected: false };
+    return {
+      connected: true,
+      expiresAt: tokens.expiresAt,
+      expired: tokens.expiresAt <= Date.now(),
+      hasRefreshToken: Boolean(tokens.refreshToken),
+    };
+  }
+
+  /** Refresh an expiring OAuth token (and persist the new set). */
+  async refreshMcpOauth(id: string): Promise<any> {
+    const { key, client } = this.oauthClientFor(id);
+    const tokens = this.readOauthToken(key);
+    if (!tokens?.refreshToken) throw new Error('No refresh token stored for this connector');
+    const resolved = this.oauth.resolve(key, client);
+    const next = await this.oauth.refresh(client, resolved.provider, tokens.refreshToken);
+    this.storeOauthToken(key, { ...tokens, ...next });
+    return { connected: true, expiresAt: next.expiresAt };
   }
 
   // ── Model routing / plans / BYOK ───────────────────────────
@@ -2081,7 +2230,35 @@ export class UmbraOS {
         else this.deviceClient?.relay(from, { t: 'task-error', error: 'description is required' });
         return;
       }
-      const taskId = await this.submitTask(description);
+      let taskId: string;
+      try {
+        taskId = await this.submitTask(description);
+      } catch (err: any) {
+        // Relay the failure to the originator so its task list learns the
+        // outcome instead of only seeing an HTTP error from the relay reply.
+        this.deviceClient?.relay(from, {
+          t: 'task-event',
+          event: 'task:failed',
+          node: this.role,
+          task: { id: 'pending-' + reqId, description, status: 'failed', error: err?.message || 'submit failed' },
+        });
+        if (reqId) this.deviceClient?.reply(reqId, { t: 'task-error', error: err?.message || 'submit failed' });
+        else this.deviceClient?.relay(from, { t: 'task-error', error: err?.message || 'submit failed' });
+        return;
+      }
+      // Deterministic sync back to the originating device: the requester gets
+      // its task-accepted reply AND a task-event snapshot carrying the assigned
+      // id, so its task list updates immediately without waiting for the
+      // executor's broadcast (which only runs when a TaskSyncBridge is wired).
+      this.deviceClient?.relay(from, {
+        t: 'task-event',
+        event: 'task:created',
+        node: this.role,
+        task: { id: taskId, description, status: 'pending' },
+      });
+      // Remember the origin so the sync bridge relays the FULL lifecycle
+      // (started/progress/completed/failed/cancelled) back to this device.
+      this.taskSyncBridge?.registerOrigin(taskId, from);
       if (reqId) this.deviceClient?.reply(reqId, { t: 'task-accepted', taskId });
       else this.deviceClient?.relay(from, { t: 'task-accepted', taskId });
     }
@@ -2155,7 +2332,15 @@ export class UmbraOS {
   async getDevices(): Promise<any> {
     if (!this.deviceRegistry) return { registered: [], connected: [], hub: null };
     const online = (id: string) => this.deviceHub?.isOnline(id) ?? false;
+    const snap = this.modelRouter.snapshot();
     return {
+      deviceLimit: deviceLimitLabel(this.configManager.raw.plan.tier),
+      plan: {
+        tier: snap.plan,
+        name: snap.planName,
+        budgetUsd: snap.monthlyBudgetUsd,
+        remainingUsd: snap.remainingUsd,
+      },
       registered: this.deviceRegistry.listDevices().map(d => ({
         deviceId: d.deviceId,
         name: d.name,
@@ -2187,6 +2372,10 @@ export class UmbraOS {
 
   async joinDevice(code: string, meta: { name: string; role?: string; capabilities?: string[] }): Promise<any> {
     if (!this.deviceRegistry) throw new Error('Device mesh disabled');
+    // Plan gate: free/byok/pro allow 1 device, ultimate unlimited. Existing
+    // devices keep reconnecting; only NEW registrations are limited.
+    const tier = this.configManager.raw.plan.tier;
+    assertCanJoinDevice(tier, this.deviceRegistry.listDevices().length);
     const roles = ['desktop', 'phone', 'server', 'other'] as const;
     const role = roles.includes(meta.role as any) ? (meta.role as 'desktop' | 'phone' | 'server' | 'other') : 'other';
     const result = this.deviceRegistry.redeemInvite(code, { name: meta.name, role, capabilities: meta.capabilities });
@@ -2195,6 +2384,7 @@ export class UmbraOS {
       token: result.token,
       name: result.device.name,
       role: result.device.role,
+      deviceLimit: deviceLimitLabel(tier),
       hubWsUrl: this.hubWsUrl(),
     };
   }
@@ -2319,6 +2509,7 @@ export class UmbraOS {
     this.p2p?.stop();
     this.pwa?.stop();
     this.deviceClient?.stop();
+    this.taskSyncBridge?.stop();
     this.deviceHub?.stop();
     this.repos.close();
     await this.fastEngine.stop();
@@ -2374,6 +2565,7 @@ export class UmbraOS {
       awareness: this.awareness,
       meetings: this.meetings,
       meetingCompanion: this.meetingCompanion,
+      billing: this.billing,
       windowsTts: this.windowsTts,
       vibeVoiceTts: this.vibeVoiceTts,
       voiceboxClient: this.voiceboxClient,

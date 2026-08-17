@@ -12,6 +12,7 @@
  */
 
 import { LLMMessage, LLMCompletionResult } from './LLMConnector';
+import { InjectionGuard } from './InjectionGuard';
 
 export interface InProcessAgentTools {
   /** Call a catalog connector through the MCP router. */
@@ -43,6 +44,12 @@ export interface InProcessAgentOptions {
   timeoutMs?: number;
   /** Optional model override for the reasoning calls. */
   model?: string;
+  /**
+   * Injection guard for untrusted tool results (webSearch page text, MCP
+   * outputs). When set, results are scrubbed before they become LLM messages
+   * and hits are recorded (optionally into the audit vault).
+   */
+  injectionGuard?: InjectionGuard;
 }
 
 export interface InProcessAgentResult {
@@ -153,10 +160,15 @@ export class InProcessAgent {
       }
 
       const toolResult = await this.runTool(tools, action, input, deadline);
+      // Tool results are untrusted (web page text, external MCP output) —
+      // quarantine any prompt-injection content before it reaches the LLM.
+      const scrubbed = this.options.injectionGuard
+        ? this.options.injectionGuard.scrub(toolResult, `tool:${action}`).text
+        : toolResult;
       messages.push({ role: 'assistant', content: reply });
       messages.push({
         role: 'user',
-        content: `Tool result for ${action}:\n${truncate(toolResult, 3000)}\n\nContinue: either call another tool or reply {"answer": "..."}.`,
+        content: `Tool result for ${action}:\n${truncate(scrubbed, 3000)}\n\nContinue: either call another tool or reply {"answer": "..."}.`,
       });
     }
 

@@ -15,6 +15,16 @@ export interface PwaServerOptions {
    * instead of a stub. Returns where the task was dispatched and its id.
    */
   onChat?: (message: string, target?: string) => Promise<{ taskId: string; target: string }>;
+  /** Active-task list for the PWA task dashboard (wire to AgentRuntime.getActiveTasks). */
+  getActiveTasks?: () => unknown;
+  /** Single-task lookup for the PWA task dashboard (wire to AgentRuntime.getTask). */
+  getTask?: (id: string) => unknown;
+  /** Cancel an in-flight task (wire to AgentRuntime.cancelTask). */
+  onCancelTask?: (taskId: string) => Promise<unknown>;
+  /** Retry a failed/cancelled task (wire to AgentRuntime.retryTask). */
+  onRetryTask?: (taskId: string, description?: string) => Promise<unknown>;
+  /** Device-mesh overview for the PWA (plan device limit + registered devices). */
+  getDeviceInfo?: () => unknown;
 }
 
 /**
@@ -63,6 +73,58 @@ export class PwaServer {
 
     if (req.method === 'POST' && parsed.pathname === '/api/chat') {
       this.handleChat(req, res);
+      return;
+    }
+
+    if (req.method === 'GET' && parsed.pathname === '/api/tasks') {
+      this.json(res, 200, { tasks: this.options.getActiveTasks ? this.options.getActiveTasks() : [] });
+      return;
+    }
+
+    // Same-origin device-mesh info for the PWA "Plan & devices" card
+    // (plan device limit + registered devices + online status).
+    if (req.method === 'GET' && parsed.pathname === '/api/devices') {
+      this.json(res, 200, { devices: this.options.getDeviceInfo ? this.options.getDeviceInfo() : null });
+      return;
+    }
+
+    const taskMatch = (parsed.pathname || '').match(/^\/api\/task\/([\w-]+)$/);
+    if (req.method === 'GET' && taskMatch && this.options.getTask) {
+      const task = this.options.getTask(taskMatch[1]);
+      if (!task) {
+        this.json(res, 404, { error: 'Task not found' });
+        return;
+      }
+      this.json(res, 200, { task });
+      return;
+    }
+
+    // Cancel an in-flight task. The PWA asks the PC for a consent grant first
+    // (POST /api/consent), then cancels via this route on the executing node.
+    const cancelMatch = (parsed.pathname || '').match(/^\/api\/task\/([\w-]+)\/cancel$/);
+    if (req.method === 'POST' && cancelMatch) {
+      if (this.options.onCancelTask) {
+        this.options
+          .onCancelTask(cancelMatch[1])
+          .then(() => this.json(res, 200, { cancelled: cancelMatch[1] }))
+          .catch((err: any) => this.json(res, 500, { error: err?.message || 'Cancel failed' }));
+      } else {
+        this.json(res, 501, { error: 'cancelTask is not available on this node' });
+      }
+      return;
+    }
+
+    // Retry a failed/cancelled task (consent-gated, same as cancel).
+    const retryMatch = (parsed.pathname || '').match(/^\/api\/task\/([\w-]+)\/retry$/);
+    if (req.method === 'POST' && retryMatch) {
+      if (this.options.onRetryTask) {
+        this.options
+          .onRetryTask(retryMatch[1])
+          .then(() => this.json(res, 200, { retried: retryMatch[1] }))
+          .catch((err: any) => this.json(res, 500, { error: err?.message || 'Retry failed' }));
+      } else {
+        this.json(res, 501, { error: 'retryTask is not available on this node' });
+      }
       return;
     }
 

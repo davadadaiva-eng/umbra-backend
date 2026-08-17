@@ -42,6 +42,22 @@ img#live{width:100%;border-radius:10px;background:#000;display:block}
 #log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#9ba1aa;white-space:pre-wrap;max-height:180px;overflow-y:auto}
 .hidden{display:none}
 .muted{color:#9ba1aa;font-size:12px}
+.titem{border:1px solid #22262f;border-radius:10px;padding:10px;margin-bottom:10px;background:#12151d}
+.titem .tdesc{font-weight:600;font-size:14px}
+.titem .tmeta{font-size:11px;color:#9ba1aa;margin-top:3px}
+.titem .tsteps{margin-top:8px}
+.tstep{font-size:12px;color:#c3c7cf;padding:3px 0;border-top:1px solid #1d2129}
+.tstep.done{color:#30a46c}
+.tstep.cur{color:#e6c76a}
+.tstep.err{color:#e5484d}
+.badge{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-radius:999px;padding:2px 8px;margin-left:6px;vertical-align:2px}
+.b-completed{background:#14301f;color:#30a46c}
+.b-executing{background:#2a2410;color:#e6c76a}
+.b-failed{background:#301418;color:#e5484d}
+.b-cancelled{background:#232830;color:#9ba1aa}
+.b-pending,.b-planning,.b-healing{background:#1c2130;color:#8ab4f8}
+.tbar{height:4px;background:#1d2129;border-radius:2px;margin-top:6px;overflow:hidden}
+.tbar i{display:block;height:100%;background:#4f46e5;border-radius:2px}
 </style>
 </head>
 <body>
@@ -78,6 +94,21 @@ img#live{width:100%;border-radius:10px;background:#000;display:block}
       <button class="secondary" id="btnMic">🎤 Speak</button>
     </div>
     <div class="muted" style="margin-top:6px">Routed automatically: cloud agents, connected devices, or your PC.</div>
+  </div>
+
+  <div class="card" id="tasksCard">
+    <h2>Tasks <span class="muted">(synced over the device mesh)</span>
+      <button class="secondary" id="btnRefreshTasks" style="float:right;padding:4px 10px">Refresh</button>
+    </h2>
+    <div id="taskList" class="muted">Loading tasks…</div>
+    <div class="muted" style="margin-top:8px">Live updates from the PC’s agent. Cancel/retry run through the consent-gated channel.</div>
+  </div>
+
+  <div class="card" id="planCard">
+    <h2>Plan &amp; devices
+      <button class="secondary" id="btnRefreshDevices" style="float:right;padding:4px 10px">Refresh</button>
+    </h2>
+    <div id="deviceInfo" class="muted">Loading…</div>
   </div>
 
   <div class="card" id="viewCard" style="display:none">
@@ -296,6 +327,7 @@ function startPairing(){
         log('Welcome: relayFps=' + msg.relayFps + ' webrtc=' + msg.webrtc);
         document.getElementById('pairCard').style.display = 'none';
         document.getElementById('viewCard').style.display = 'block';
+        loadDeviceInfo();
         if (msg.webrtc === true){ tryWebRTC(msg.stunServers || [], msg.turnServers || []); }
       } else if (msg.type === 'enc'){
         handleEnc(msg.enc);
@@ -387,7 +419,11 @@ document.getElementById('btnMic').addEventListener('click', function(){
       for (var i = 0; i < e.results.length; i++){ t += e.results[i][0].transcript; }
       chatInput.value = t;
     };
-    recorder.onend = function(){ log('Speech finished'); };
+    recorder.onend = function(){
+      log('Speech finished');
+      var text = chatInput.value.trim();
+      if (text){ log('Submitting: ' + text); askUmbra(text); }
+    };
     recorder.onerror = function(e){ log('Mic error: ' + e.error); };
   }
   try { recorder.start(); log('Listening…'); } catch(e){ log('Mic error: ' + e.message); }
@@ -415,6 +451,44 @@ function tryWebRTC(stunServers, turnServers){
   } catch(e){ log('WebRTC unavailable — using relay.'); }
 }
 
+// ── Plan & devices (plan name, token budget, mesh limit) ────
+function fmtUsd(n){ return (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '0.00'; }
+function budgetLine(plan){
+  if (!plan){ return ''; }
+  var b = plan.budgetUsd;
+  var r = plan.remainingUsd;
+  if (b === Infinity || b == null){ return 'Budget: <b>Unlimited (your keys)</b>'; }
+  if (b === 0){ return 'Budget: <b>Free models only</b>'; }
+  return 'Budget: <b>$' + fmtUsd(r) + ' left</b> of $' + fmtUsd(b);
+}
+function loadDeviceInfo(){
+  var el = document.getElementById('deviceInfo');
+  if (!el) return;
+  fetch('/api/devices').then(function(r){ return r.json(); }).then(function(j){
+    var d = j.devices || j;
+    var limit = d.deviceLimit;
+    var list = d.registered || [];
+    var plan = d.plan || {};
+    var html = 'Plan: <b>' + String(plan.name || 'Free') + '</b> · ' + budgetLine(plan) +
+      '<br/>Device limit: <b>' + (limit === 'unlimited' ? 'Unlimited' : String(limit)) + '</b>' +
+      ' · Registered: <b>' + list.length + '</b>';
+    if (list.length > 0){
+      html += '<div style="margin-top:8px">';
+      for (var i = 0; i < list.length; i++){
+        var dev = list[i];
+        html += '<div class="tstep' + (dev.online ? ' done' : '') + '">' + dev.name +
+          ' <span class="muted">(' + dev.role + (dev.online ? ', online' : ', offline') + ')</span></div>';
+      }
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  }).catch(function(e){
+    el.textContent = 'Devices unavailable: ' + e.message;
+  });
+}
+document.getElementById('btnRefreshDevices').addEventListener('click', loadDeviceInfo);
+loadDeviceInfo();
+
 // ── UI wiring ───────────────────────────────────────────────
 document.getElementById('btnScreenshot').addEventListener('click', function(){
   sendEnc({t:'frame'});
@@ -441,6 +515,118 @@ for (var i = 0; i < quick.length; i++){
     var m = JSON.parse(this.getAttribute('data-cmd'));
     command(m.action, m.params || {});
   });
+}
+
+// ── Task dashboard (synced over the device mesh / REST + WS) ──
+var taskList = document.getElementById('taskList');
+var tasksCache = {};
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function taskBadge(st){ return '<span class="badge b-' + esc(st) + '">' + esc(st) + '</span>'; }
+function taskSummary(t){
+  var p = t.progress != null ? t.progress : (t.completedStepCount != null && t.plan && t.plan.length ? Math.round(100 * t.completedStepCount / t.plan.length) : (t.completedStepCount != null ? t.completedStepCount : 0));
+  var meta = (t.node ? 'node: ' + esc(t.node) : '') + (t.priority ? ' · priority ' + t.priority : '');
+  var actions = '';
+  if (t.status === 'failed' || t.status === 'cancelled'){
+    actions = '<div class="row" style="margin-top:8px"><button class="secondary" data-retry="' + esc(t.id) + '">↻ Retry</button></div>';
+  }
+  return '\\n    <div class="titem"><div class="tdesc">' + esc(t.description || t.id) + taskBadge(t.status || 'pending') + '</div>'
+    + '<div class="tmeta">' + meta + (t.error ? ' · <span style="color:#e5484d">' + esc(t.error) + '</span>' : '') + '</div>'
+    + (t.totalSteps ? '<div class="tbar"><i style="width:' + Math.min(100, p || 0) + '%"></i></div><div class="tmeta">' + (t.completedStepCount != null ? t.completedStepCount : '?') + '/' + t.totalSteps + ' steps</div>' : '')
+    + actions
+    + '</div>';
+}
+function renderTasks(){
+  var ids = Object.keys(tasksCache).sort().reverse();
+  if (!ids.length){ taskList.textContent = 'No active tasks.'; return; }
+  taskList.innerHTML = ids.map(function(id){ return taskSummary(tasksCache[id]); }).join('');
+}
+function upsertTask(t){
+  if (!t || !t.id) return;
+  var prev = tasksCache[t.id];
+  tasksCache[t.id] = t;
+  if (prev && prev.status === 'completed' && (t.status === 'completed' || !t.status)) return; // keep finished snapshot
+  renderTasks();
+}
+function loadTasks(){
+  fetch('/api/tasks', {headers:{'Accept':'application/json'}})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      var list = (j && j.tasks) || [];
+      if (list && list.length){ for (var i = 0; i < list.length; i++){ upsertTask(list[i]); } }
+      if (!Object.keys(tasksCache).length){ taskList.textContent = 'No active tasks.'; }
+    })
+    .catch(function(){ taskList.textContent = 'Could not load tasks — is the agent running?'; });
+}
+document.getElementById('btnRefreshTasks').addEventListener('click', loadTasks);
+
+// Live task events: the ApiServer (/api/ws on port 8787) relays every
+// task:created/started/completed/failed/cancelled as {type:'event', name, payload}.
+(function(){
+  var w = null;
+  function open(){
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    var port = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? ':8787' : '';
+    w = new WebSocket(proto + location.hostname + port + '/api/ws');
+    w.onopen = function(){ log('Task stream connected'); };
+    w.onmessage = function(ev){
+      try {
+        var m = JSON.parse(ev.data);
+        if (m && m.type === 'event' && m.name && m.name.indexOf('task:') === 0){
+          var t = (m.payload && typeof m.payload === 'object') ? m.payload : {id: String(m.payload)};
+          upsertTask(t);
+          log('TASK ' + m.name + ' ' + (t.id || ''));
+        }
+      } catch(e){ }
+    };
+    w.onclose = function(){ setTimeout(open, 3000); };
+    w.onerror = function(){ try { w.close(); } catch(e){} };
+  }
+  open();
+})();
+
+// Consent-gated retry: ask the PC for a consent grant first, then POST the
+// retry (with the task description) to the agent's REST API.
+function retryTask(taskId, description){
+  log('Requesting consent to retry ' + taskId + '…');
+  fetch('/api/consent', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({action:'request', reason: 'retry task ' + taskId})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (j && j.result !== 'granted'){ log('Retry denied: ' + (j && j.result)); return; }
+      return fetch('/api/task/' + encodeURIComponent(taskId) + '/retry', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({description: description || ''})})
+        .then(function(r){ return r.json(); })
+        .then(function(j2){
+          log('Retry sent: ' + (j2 && j2.taskId ? j2.taskId : JSON.stringify(j2)));
+          loadTasks();
+        });
+    })
+    .catch(function(e){ log('Retry failed: ' + e.message); });
+}
+
+document.getElementById('taskList').addEventListener('click', function(ev){
+  var el = ev.target;
+  if (el && el.getAttribute && el.getAttribute('data-retry')){
+    var id = el.getAttribute('data-retry');
+    var t = tasksCache[id] || {};
+    retryTask(id, t.description);
+  }
+});
+
+// Consent-gated cancel: ask the PC for a consent grant first, then POST the
+// cancel to the agent's REST API.
+function cancelTask(taskId){
+  log('Requesting consent to cancel ' + taskId + '…');
+  fetch('/api/consent', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({action:'request', reason: 'cancel task ' + taskId})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (j && j.result !== 'granted'){ log('Cancel denied: ' + (j && j.result)); return; }
+      return fetch('/api/task/' + encodeURIComponent(taskId) + '/cancel', {method:'POST'})
+        .then(function(r){ return r.json(); })
+        .then(function(j2){
+          log('Cancel sent: ' + (j2 && j2.cancelled ? j2.cancelled : JSON.stringify(j2)));
+          loadTasks();
+        });
+    })
+    .catch(function(e){ log('Cancel failed: ' + e.message); });
 }
 log('Umbra remote loaded. Scan the QR from your PC’s /pair page.');
 })();

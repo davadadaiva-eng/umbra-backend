@@ -62,4 +62,43 @@ describe('TaskSyncBridge', () => {
     eventBus.emit('task:created', 't-3');
     expect(sent).toHaveLength(0);
   });
+
+  it('relays the full lifecycle to the originating device', () => {
+    const relayed: any[] = [];
+    const bridge = new TaskSyncBridge({
+      broadcast: () => {},
+      getTask: id => makeTask(id, 'executing'),
+      relayTo: (deviceId, msg) => relayed.push({ deviceId, msg }),
+    });
+    bridge.start();
+
+    bridge.registerOrigin('t-9', 'device-phone');
+    eventBus.emit('task:started', 't-9');
+    eventBus.emit('task:progress', 't-9', 3);
+
+    expect(relayed).toHaveLength(2);
+    expect(relayed[0].deviceId).toBe('device-phone');
+    expect(relayed[0].msg).toMatchObject({ event: 'task:started', task: { id: 't-9' } });
+    expect(relayed[1].msg).toMatchObject({ event: 'task:progress', task: { id: 't-9', progress: 3 } });
+
+    bridge.stop();
+  });
+
+  it('forgets the origin after a terminal state', () => {
+    const relayed: any[] = [];
+    const bridge = new TaskSyncBridge({
+      broadcast: () => {},
+      relayTo: (deviceId, msg) => relayed.push({ deviceId, msg }),
+    });
+    bridge.start();
+
+    bridge.registerOrigin('t-10', 'device-phone');
+    eventBus.emit('task:completed', 't-10', 'done');
+    eventBus.emit('task:progress', 't-10', 99);
+
+    expect(relayed).toHaveLength(1);
+    expect(relayed[0].msg.event).toBe('task:completed');
+
+    bridge.stop();
+  });
 });

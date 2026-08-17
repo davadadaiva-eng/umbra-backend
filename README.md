@@ -59,12 +59,20 @@ UI contract: [`docs/ui-contract.md`](docs/ui-contract.md).
   lets external agents call Umbra's connectors.
 - **P2P mesh & device pairing** — an encrypted Rust mesh daemon plus a WebSocket device
   hub (port 8788) keeps phones/desktops connected; QR-code pairing, WebRTC streaming, and
-  a bundled PWA for phone control.
+  a bundled PWA for phone control. Plan device limits: Pro = 1 connected device,
+  Ultimate = unlimited (enforced at join; `GET /api/devices` reports the limit).
 - **Skill stack & context compression** — 20 domains × 5 skills (100 skills) route
   intents to skill definitions; a Graphify/Caveman pipeline compresses huge context
   (~10,000 tokens → ~300 with expandable cliques) before LLM calls.
 - **Metering & prompt caching** — every LLM call is gated behind a plan tier, a circuit
   breaker and token accounting, with prompt caching to cut repeat-context cost.
+- **Paid plans & billing** — Pro/Ultimate auto-assign a pre-split monthly token budget
+  per model slot; a zero-dependency Stripe checkout + webhook (`/api/billing/checkout`,
+  `/api/billing/webhook`) activates a plan automatically once payment succeeds.
+- **Telco (SMS & calls)** — send an SMS or initiate a voice call through Telnyx from the
+  REST API (`/api/telco/*`), with vault-persisted credentials and token-masked status.
+- **Docker workers** — run, stop, remove and list containerized skill workers over the
+  REST API (`/api/docker/*`) with per-container memory/CPU limits.
 
 ## Configuration
 
@@ -78,7 +86,7 @@ model roles (`fast`, `vision`, `reasoning`), workspace (displays, CPU/GPU limits
 | `npm run build` | TypeScript → `dist/` |
 | `npm run dev` | ts-node live run |
 | `npm start` | Run from `dist/` |
-| `npm test` | Jest — 48 suites / 372 tests (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api) |
+| `npm test` | Jest — 51 suites / 421 tests (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api, billing) |
 | `npm run lint` | oxlint over `src/` |
 
 Integration tests (live system — build first, then `node scripts/<name>`; requires the

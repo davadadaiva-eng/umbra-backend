@@ -101,6 +101,14 @@ stays connected to:
    the cloud, or relays a `cmd` through the hub to the desktop (the desktop
    executes it via real-desktop control and relays the result back).
 
+**Plan device limits** — free/BYOK/Pro allow **1** registered device (the
+phone *or* the desktop); Ultimate allows **unlimited**. Enforcement is at
+join time (`POST /api/devices/join`): a second join on a 1-device plan is
+rejected with a clear message until an existing device is revoked
+(`POST /api/devices/revoke`) or the plan is upgraded. Already-registered
+devices keep auto-reconnecting — the limit only blocks *new* registrations.
+`GET /api/devices` reports the current `deviceLimit` for the plan.
+
 Desktop → cloud join (one-time, then automatic):
 ```bash
 UMBRA_API_URL=https://umbra.example.com \
@@ -129,6 +137,50 @@ UMBRA_DOMAIN=umbra.example.com docker compose --profile edge up -d
   `p2p.turnServers = ["turn:turnuser:turnpass@<server>:3478"]`. The PWA falls
   back from a direct WebRTC data channel to the encrypted JPEG relay
   automatically, and TURN now lets the direct path work behind symmetric NAT.
+
+## Billing (Stripe checkout + webhook)
+
+The cloud can sell the hosted plans end-to-end — no manual activation needed:
+
+1. **Stripe dashboard** → Products/Prices: create two subscription prices
+   (Pro €19, Ultimate €38) and copy their `price_...` ids.
+2. **Configure** the cloud node (secrets stay in the git-ignored config
+   volume or env vars):
+
+   ```bash
+   UMBRA_STRIPE_SECRET_KEY=sk_live_... \
+   UMBRA_STRIPE_WEBHOOK_SECRET=whsec_... \
+   UMBRA_STRIPE_PRICE_PRO=price_... \
+   UMBRA_STRIPE_PRICE_ULTIMATE=price_... \
+   UMBRA_PUBLIC_URL=https://umbra.example.com \
+   docker compose --profile edge up -d
+   ```
+3. **Point the webhook at the cloud**: Stripe dashboard → Webhooks → add
+   endpoint `https://<domain>/api/billing/webhook` with event
+   `checkout.session.completed` and copy the signing secret (`whsec_...`).
+4. **Sell**: redirect buyers to `https://<domain>/api/billing/checkout?tier=pro`
+   (or `?tier=ultimate`); Stripe hosts the checkout and, on success, the
+   webhook verifies the signature and auto-activates the plan — routing + the
+   pre-split token budget + cloud continuation, exactly like `POST
+   /api/plan/activate`.
+
+`npm run setup` collects the Stripe keys/price ids interactively instead of
+env vars if you prefer config.json. The webhook path is already proxied by
+Caddy in the `edge` profile.
+
+**One-OpenRouter-key setup** — `npm run setup -- --openrouter-key sk-or-...`
+(or `--openrouter` / `OPENROUTER_API_KEY`) maps every routing slot
+(fast/reasoning/frontend/difficult + the `:free` spillover) to real OpenRouter
+model ids with real per-1M pricing, and live-validates the key, printing the
+credit limit, remaining balance, and monthly usage. One key then fundsthe whole token budget; the MeteringService still caps spend per the plan ($5 Pro
+/ $10 Ultimate) and spills to free models when exhausted.
+
+**One keys file for all of it** — `npm run setup -- --keys-file umbra-keys.json`
+loads every key (OpenRouter, provider, Telnyx, Stripe, tier, public URL) from a
+single JSON or `.env` file — see `umbra-keys.example.json` in the repo root.
+Keys are matched case-/separator-insensitively and nested objects flatten
+(`{ telnyx: { key } }` == `TELNYX_API_KEY`). The real file (`umbra-keys.json`)
+is git-ignored; explicit flags and environment variables still take precedence.
 
 ## Voice-to-text (whisper.cpp)
 
