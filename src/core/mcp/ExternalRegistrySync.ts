@@ -33,7 +33,7 @@ export interface SyncOptions {
   onProgress?: (source: string, count: number, total: number) => void;
 }
 
-const SMITHERY_SOURCE: RegistrySource = {
+export const SMITHERY_SOURCE: RegistrySource = {
   name: 'smithery',
   url: 'https://api.smithery.ai/servers',
   extract: json => json?.servers ?? [],
@@ -48,6 +48,35 @@ const SMITHERY_SOURCE: RegistrySource = {
     description: typeof e.description === 'string' ? e.description.slice(0, 160) : '',
   }),
 };
+
+/**
+ * The official MCP registry (registry.modelcontextprotocol.io) — thousands of
+ * published streamable-HTTP servers. Entries map 1:1 to remote connectors:
+ * registering one makes it callable through the same MCP router, so a single
+ * sync turns the catalog into 1000+ working connectors.
+ */
+export const OFFICIAL_REGISTRY_SOURCE: RegistrySource = {
+  name: 'mcp-registry',
+  url: 'https://registry.modelcontextprotocol.io/v0/servers',
+  extract: json => json?.servers ?? [],
+  map: (server: any) => {
+    const def = server?.server ?? {};
+    const remotes: Array<{ type?: string; url?: string }> = Array.isArray(def.remotes) ? def.remotes : [];
+    const remote = remotes.find(r => r?.type === 'streamable-http') ?? remotes[0];
+    return {
+      id: `mcp-${def.name || 'server'}`.replace(/[^a-zA-Z0-9-_]/g, '-'),
+      name: def.title || def.name || 'Unknown',
+      category: 'Official MCP Registry',
+      baseUrl: remote?.url || '',
+      authType: 'none' as McpConnectorConfig['authType'],
+      credentialKey: 'mcp-registry',
+      description: typeof def.description === 'string' ? def.description.slice(0, 160) : '',
+    };
+  },
+};
+
+/** All bundled registry sources, in priority order. */
+export const DEFAULT_SOURCES: RegistrySource[] = [SMITHERY_SOURCE, OFFICIAL_REGISTRY_SOURCE];
 
 export class ExternalRegistrySync {
   private registry: McpRegistry;

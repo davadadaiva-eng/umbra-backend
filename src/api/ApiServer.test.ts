@@ -30,6 +30,7 @@ function makeDeps() {
     getMcpOauthStatus: (id: string) => ({ connected: id === 'gmail', expiresAt: id === 'gmail' ? 123 : undefined }),
     refreshMcpOauth: async (id: string) => ({ connected: true, id }),
     syncExternalConnectors: async () => ({ registered: 3, sources: ['smithery'], errors: [] }),
+    syncExternalSources: async (opts?: { maxPerSource?: number }) => ({ registered: 25, sources: ['smithery', 'mcp-registry'], maxPerSource: opts?.maxPerSource ?? 0, errors: [] }),
     getMeshStatus: async () => ({ running: true, paired_devices: 1 }),
     meshPair: async (ttl = 120) => ({ deviceId: 'mesh-1', exp: Date.now() + ttl * 1000 }),
     meshPairDemo: async () => ({ ok: true, match: true }),
@@ -51,7 +52,11 @@ function makeDeps() {
     }),
     testLlm: async () => ({ ok: true, model: 'test-fast', tokens: 30, latencyMs: 5 }),
     configureProvider: async (patch: Record<string, unknown>) => ({ applied: patch }),
-    activatePlan: async (tier: string) => ({ plan: tier, budget: { monthlyBudgetUsd: 5, slotBudgets: { fast: 1, reasoning: 1, frontend: 1, difficult: 2 } } }),
+    activatePlan: async (tier: string, tenantId?: string) => ({ plan: tier, ...(tenantId ? { tenant: tenantId } : {}), budget: { monthlyBudgetUsd: 5, slotBudgets: { fast: 1, reasoning: 1, frontend: 1, difficult: 2 } } }),
+    tenantsList: async () => ([{ id: 't1', name: 'Test user', tier: 'pro', enabled: true, deviceLimit: 1, deviceLimitLabel: 1, createdAt: 'x', updatedAt: 'x' }]),
+    tenantsRegister: async (opts: { id: string; name?: string; tier?: string }) => ({ id: opts.id, name: opts.name, tier: opts.tier || 'free', enabled: true, deviceLimit: 1, deviceLimitLabel: 1, createdAt: 'x', updatedAt: 'x' }),
+    tenantsActivate: async (id: string, tier: string) => ({ id, tier, enabled: true, deviceLimit: 1, deviceLimitLabel: 1, createdAt: 'x', updatedAt: 'x' }),
+    tenantsDisable: async (id: string) => ({ id, enabled: false, tier: 'free', deviceLimit: 1, deviceLimitLabel: 1, createdAt: 'x', updatedAt: 'x' }),
     billingCreateCheckout: async (tier: string) => ({ url: `https://checkout.stripe.com/c/pay/${tier}`, sessionId: `cs_${tier}` }),
     billingHandleWebhook: async (raw: string, sig: string) => ({ event: JSON.parse(raw).type, signature: sig }),
     getProviderConfig: async () => ({ provider: 'openai', keys: { openai: '••••abcd' } }),
@@ -331,6 +336,58 @@ describe('ApiServer', () => {
   test('plan activate requires a tier', async () => {
     const res = await api('/api/plan/activate', 'POST', {});
     expect(res.status).toBe(500);
+  });
+
+  test('plan activate with a tenant scopes the activation to that tenant', async () => {
+    const res = await api('/api/plan/activate', 'POST', { tier: 'ultimate', tenant: 'cust_123' });
+    expect(res.status).toBe(200);
+    expect(res.json.tenant).toBe('cust_123');
+    expect(res.json.plan).toBe('ultimate');
+  });
+
+  test('plan usage accepts a tenant filter', async () => {
+    const res = await api('/api/plan/usage?tenant=cust_123');
+    expect(res.status).toBe(200);
+    expect(res.json.plan).toBe('pro');
+  });
+
+  test('tenants list returns every registered tenant', async () => {
+    const res = await api('/api/tenants');
+    expect(res.status).toBe(200);
+    expect(res.json.tenants.length).toBe(1);
+    expect(res.json.tenants[0].id).toBe('t1');
+  });
+
+  test('tenants register creates a tenant with the given plan', async () => {
+    const res = await api('/api/tenants/register', 'POST', { id: 'cust_42', name: 'Acme', tier: 'ultimate' });
+    expect(res.status).toBe(200);
+    expect(res.json.tenant.id).toBe('cust_42');
+    expect(res.json.tenant.tier).toBe('ultimate');
+  });
+
+  test('tenants register rejects a missing id', async () => {
+    const res = await api('/api/tenants/register', 'POST', {});
+    expect(res.status).toBe(500);
+  });
+
+  test('tenants activate switches one tenant plan', async () => {
+    const res = await api('/api/tenants/activate', 'POST', { id: 'cust_42', tier: 'pro' });
+    expect(res.status).toBe(200);
+    expect(res.json.tenant.tier).toBe('pro');
+  });
+
+  test('tenants disable drops the tenant back to the node default budget', async () => {
+    const res = await api('/api/tenants/disable', 'POST', { id: 'cust_42' });
+    expect(res.status).toBe(200);
+    expect(res.json.tenant.enabled).toBe(false);
+  });
+
+  test('mcp import-registry bulk-loads connectors from every registry source', async () => {
+    const res = await api('/api/mcp/import-registry', 'POST', { maxPerSource: 50 });
+    expect(res.status).toBe(200);
+    expect(res.json.result.registered).toBe(25);
+    expect(res.json.result.sources).toContain('mcp-registry');
+    expect(res.json.result.maxPerSource).toBe(50);
   });
 
   test('openmontage tools lists the registry', async () => {

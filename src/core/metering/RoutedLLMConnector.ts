@@ -21,18 +21,31 @@ import { getLogger } from '../Logger';
 import { MeteredLLMConnector } from './MeteredLLMConnector';
 import { MeteringService } from './MeteringService';
 import { ModelRouter } from './ModelRouter';
+import { TenantLedger } from '../billing/TenantLedger';
 import { RoutingTier, UmbraConfig } from '../../types';
 
 export class RoutedLLMConnector extends MeteredLLMConnector {
   private router: ModelRouter;
+  private tenants?: TenantLedger;
 
-  constructor(config: UmbraConfig, metering: MeteringService, router: ModelRouter) {
+  constructor(config: UmbraConfig, metering: MeteringService, router: ModelRouter, tenants?: TenantLedger) {
     super(config, metering);
     this.router = router;
+    this.tenants = tenants;
   }
 
   get routing(): ModelRouter {
     return this.router;
+  }
+
+  /**
+   * Router for the current async chain: the tenant bound by
+   * `TenantLedger.run(tenantId, ...)` at the API/device boundary gets its own
+   * budget + spend ledger; everything else uses the node's default router.
+   */
+  private resolveRouter(): ModelRouter {
+    if (!this.tenants) return this.router;
+    return this.tenants.routerFor(this.tenants.currentTenant());
   }
 
   async complete(
@@ -40,47 +53,49 @@ export class RoutedLLMConnector extends MeteredLLMConnector {
     role: 'reasoning' | 'vision' | 'fast' = 'reasoning',
     options: LLMCompletionOptions = {}
   ): Promise<LLMCompletionResult> {
-    if (!this.router.enabled) {
-      return super.complete(messages, role, this.capOutput(options));
+    const router = this.resolveRouter();
+    if (!router.enabled) {
+      return super.complete(messages, role, this.capOutput(options, router));
     }
 
-    const tier = this.router.resolveTier(role, options.task);
+    const tier = router.resolveTier(role, options.task);
     try {
-      return await this.runTier(tier, messages, role, options);
+      return await this.runTier(router, tier, messages, role, options);
     } catch (err: any) {
       // Provider failure or quota: spill over to free models so we never
       // run out of capacity.
       if (tier !== 'free') {
         getLogger().warn({ tier, err: err.message }, 'Hosted slot unavailable — spilling over to free models');
-        return await this.runTier('free', messages, role, options);
+        return await this.runTier(router, 'free', messages, role, options);
       }
       throw err;
     }
   }
 
   /** Clamp max output tokens to the plan's hard cap. */
-  private capOutput(options: LLMCompletionOptions): LLMCompletionOptions {
-    const max = this.router.maxOutputTokens();
+  private capOutput(options: LLMCompletionOptions, router: ModelRouter): LLMCompletionOptions {
+    const max = router.maxOutputTokens();
     return { ...options, maxTokens: Math.min(options.maxTokens ?? max, max) };
   }
 
   private async runTier(
+    router: ModelRouter,
     tier: RoutingTier,
     messages: LLMMessage[],
     role: 'reasoning' | 'vision' | 'fast',
     options: LLMCompletionOptions,
   ): Promise<LLMCompletionResult> {
-    const inputEstimate = this.router.estimateInput(messages);
-    const outputEstimate = this.router.maxOutputTokens();
+    const inputEstimate = router.estimateInput(messages);
+    const outputEstimate = router.maxOutputTokens();
 
-    // Hosted budget exhausted → transparently degrade to free models.
-    if (tier !== 'free' && !this.router.canAffordTier(tier, inputEstimate, outputEstimate)) {
+    // Hosted budget exhausted → spill to free models.
+    if (tier !== 'free' && !router.canAffordTier(tier, inputEstimate, outputEstimate)) {
       getLogger().info({ tier }, 'Hosted token budget exhausted — spilling over to free models');
-      return this.runTier('free', messages, role, options);
+      return this.runTier(router, 'free', messages, role, options);
     }
 
-    const cfg = this.router.tierConfig(tier);
-    const effective = this.capOutput({ ...options, model: options.model || cfg.model });
+    const cfg = router.tierConfig(tier);
+    const effective = this.capOutput({ ...options, model: options.model || cfg.model }, router);
 
     let result: LLMCompletionResult;
     if (cfg.provider === this.currentConfig.provider && !cfg.endpoint) {
@@ -103,7 +118,7 @@ export class RoutedLLMConnector extends MeteredLLMConnector {
 
     const input = result.inputTokens ?? inputEstimate;
     const output = result.outputTokens ?? Math.max(0, result.totalTokens - inputEstimate);
-    this.router.record(tier, input, output);
+    router.record(tier, input, output);
     return result;
   }
 }

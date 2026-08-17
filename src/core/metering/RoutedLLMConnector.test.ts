@@ -5,6 +5,7 @@ import * as path from 'path';
 import { RoutedLLMConnector } from './RoutedLLMConnector';
 import { ModelRouter } from './ModelRouter';
 import { MeteringService } from './MeteringService';
+import { TenantLedger } from '../billing/TenantLedger';
 import { RoutingConfig, UmbraConfig } from '../../types';
 
 const dir = path.join(os.tmpdir(), `umbra-routed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -131,6 +132,29 @@ describe('RoutedLLMConnector', () => {
     const conn = new RoutedLLMConnector(config, metering, router);
     const res = await conn.complete([{ role: 'user', content: 'hi' }], 'fast');
     expect(res.content).toBe('pong:free-model');
+  });
+
+  it('meters per tenant: an exhausted tenant spills to free while others keep the paid slot', async () => {
+    const endpoint = `http://127.0.0.1:${port}`;
+    const config = makeConfig(endpoint);
+    const metering = new MeteringService({ dataDir: dir });
+    const defaultRouter = new ModelRouter({ config });
+    const ledger = new TenantLedger({ config, dataDir: dir, defaultRouter });
+    ledger.register({ id: 'alice', tier: 'pro' });
+    ledger.register({ id: 'bob', tier: 'pro' });
+    // Blow through alice's $1 fast slot on her own ledger only.
+    ledger.routerFor('alice').record('fast', 200_000_000, 0);
+    const conn = new RoutedLLMConnector(config, metering, defaultRouter, ledger);
+
+    const aliceRes = await TenantLedger.run('alice', () => conn.complete([{ role: 'user', content: 'hi' }], 'fast'));
+    expect(aliceRes.content).toBe('pong:free-model'); // alice: budget gone → free models
+    expect(ledger.routerFor('bob').snapshot().spentBySlot.fast).toBe(0); // alice's spend never leaked into bob's ledger
+
+    const bobRes = await TenantLedger.run('bob', () => conn.complete([{ role: 'user', content: 'hi' }], 'fast'));
+    expect(bobRes.content).toBe('pong:fast-model'); // bob: full budget intact
+
+    const nodeRes = await conn.complete([{ role: 'user', content: 'hi' }], 'fast');
+    expect(nodeRes.content).toBe('pong:fast-model'); // outside any tenant: node default router
   });
 
   it('locks the free plan to free models even with routing enabled', async () => {

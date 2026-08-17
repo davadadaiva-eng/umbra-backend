@@ -86,7 +86,7 @@ model roles (`fast`, `vision`, `reasoning`), workspace (displays, CPU/GPU limits
 | `npm run build` | TypeScript → `dist/` |
 | `npm run dev` | ts-node live run |
 | `npm start` | Run from `dist/` |
-| `npm test` | Jest — 51 suites / 421 tests (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api, billing) |
+| `npm test` | Jest — 466 tests / 55 suites (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api, billing, tenants) |
 | `npm run lint` | oxlint over `src/` |
 
 Integration tests (live system — build first, then `node scripts/<name>`; requires the

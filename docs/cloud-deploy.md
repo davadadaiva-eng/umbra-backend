@@ -182,6 +182,48 @@ Keys are matched case-/separator-insensitively and nested objects flatten
 (`{ telnyx: { key } }` == `TELNYX_API_KEY`). The real file (`umbra-keys.json`)
 is git-ignored; explicit flags and environment variables still take precedence.
 
+## Multi-user (per-user budgets on one cloud node)
+
+Each paying customer gets their **own $5/$10 monthly token budget**, own
+spend ledger, and own device cap — one cloud node can sell to many users
+without letting one heavy user drain everyone:
+
+1. **Register the user**: `POST /api/tenants/register {id, name?, tier?}`
+   (use the Stripe customer id for convenience; `GET /api/tenants` lists
+   everyone with live budget/usage + device limits).
+2. **They pay**: send buyers to
+   `/api/billing/checkout?tier=pro&tenant=<id>` — the tenant id rides in the
+   Stripe session metadata, and the webhook auto-activates *that* user's
+   plan. (Or `POST /api/tenants/activate {id, tier}` manually.)
+3. **Their traffic is scoped**: the phone PWA and any API client send the
+   `X-Umbra-Tenant: <id>` header — every LLM call the request spawns meters
+   against that user's ledger. An exhausted user spills to free models
+   while everyone else keeps their paid slots; spend checks are per-tenant.
+4. **Watch it**: `GET /api/plan/usage?tenant=<id>` (or all tenants via
+   `GET /api/tenants`). Disable a user with
+   `POST /api/tenants/disable {id}` to drop them back to the node default.
+
+Traffic with no header (or an unregistered tenant) uses the node's own
+default budget — so a single-tenant install behaves exactly as before.
+
+## 1000+ connectors in one call
+
+The catalog already bundles hundreds of connectors, and the rest of the
+universe is one POST away:
+
+```bash
+curl -X POST http://<host>/api/mcp/import-registry -H 'content-type: application/json' \
+     -d '{"maxPerSource": 0}'   # 0 = import everything
+```
+
+This pulls **Smithery** (`api.smithery.ai/servers`) and the **official MCP
+registry** (`registry.modelcontextprotocol.io`, thousands of streamable-HTTP
+servers) and registers every entry as a remote connector through the same
+MCP router — `mcp-<name>` ids, deduped, no restart needed. Connectors that
+need auth resolve their key lazily from the vault at call time. The device
+PWA and the agent can then call any of them; enable the ones you actually
+use to keep the surface tight.
+
 ## Voice-to-text (whisper.cpp)
 
 Free, private, unlimited STT on the cloud server:

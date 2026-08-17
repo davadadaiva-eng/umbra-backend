@@ -86,7 +86,7 @@ import { McpRegistry } from './core/mcp/McpRegistry';
 import { McpRouter } from './core/mcp/McpRouter';
 import { McpHttpConnector } from './core/mcp/McpHttpConnector';
 import { McpServerEndpoint } from './core/mcp/McpServerEndpoint';
-import { ExternalRegistrySync } from './core/mcp/ExternalRegistrySync';
+import { ExternalRegistrySync, DEFAULT_SOURCES } from './core/mcp/ExternalRegistrySync';
 import { OAuthConnector, OAuthTokenSet } from './core/mcp/OAuthConnector';
 import { MCP_CATALOG } from './core/mcp/McpCatalog';
 import { CredentialVault } from './core/vault/CredentialVault';
@@ -95,6 +95,7 @@ import { MeetingAgent } from './core/meeting/MeetingAgent';
 import { TelnyxClient } from './core/telco/TelnyxClient';
 import { DockerDaemon } from './core/docker/DockerDaemon';
 import { StripeBilling } from './core/billing/StripeBilling';
+import { TenantLedger } from './core/billing/TenantLedger';
 import { MeteringService } from './core/metering/MeteringService';
 import { ModelRouter, DEFAULT_ROUTING } from './core/metering/ModelRouter';
 import { RoutedLLMConnector } from './core/metering/RoutedLLMConnector';
@@ -178,6 +179,7 @@ export class UmbraOS {
   private telnyx!: TelnyxClient;
   private dockerDaemon!: DockerDaemon;
   private billing?: StripeBilling;
+  private tenants!: TenantLedger;
   private metering!: MeteringService;
   private modelRouter!: ModelRouter;
   private startedAt: number = Date.now();
@@ -220,9 +222,14 @@ export class UmbraOS {
       persistPath: path.join(config.paths.dataDir, 'routing-usage.json'),
     });
 
+    // ── Multi-user budgets: each registered tenant gets its own router
+    //    (tier + $5/$10 monthly ceiling + spend ledger). No tenants => the
+    //    node keeps using the default router exactly as before. ───────
+    this.tenants = new TenantLedger({ config, dataDir: config.paths.dataDir, defaultRouter: this.modelRouter });
+
     // ── LLM (routed + metered: tier selection, rate limits, circuit
     //    breaker, token accounting, plan gate) ────────────────────────
-    this.llm = new RoutedLLMConnector(config, this.metering, this.modelRouter);
+    this.llm = new RoutedLLMConnector(config, this.metering, this.modelRouter, this.tenants);
 
     // ── Privacy Guard ────────────────────────────────────────
     this.privacy = new PrivacyGuard();
@@ -511,12 +518,17 @@ export class UmbraOS {
       getMcpOauthStatus: id => this.getMcpOauthStatus(id),
       refreshMcpOauth: id => this.refreshMcpOauth(id),
       syncExternalConnectors: opts => this.syncExternalConnectors(opts),
+      syncExternalSources: opts => this.syncExternalMcpSources(opts),
       getModelStatus: () => this.getModelStatus(),
-      getPlanUsage: () => this.getPlanUsage(),
+      getPlanUsage: tenantId => this.getPlanUsage(tenantId),
       testLlm: () => this.testLlm(),
       configureProvider: patch => this.configureProvider(patch),
-      activatePlan: tier => this.activatePlan(tier),
-      billingCreateCheckout: tier => this.billing!.createCheckoutSession(tier),
+      activatePlan: (tier, tenantId) => this.activatePlan(tier, tenantId),
+      billingCreateCheckout: (tier, tenantId) => this.billing!.createCheckoutSession(tier, tenantId),
+      tenantsList: async () => this.tenants.statuses(),
+      tenantsRegister: async opts => this.tenants.register({ ...opts, tier: opts.tier as PlanTier | undefined }),
+      tenantsActivate: async (id, tier) => this.tenants.activate(id, tier),
+      tenantsDisable: async id => this.tenants.disable(id),
       billingHandleWebhook: (rawBody, signature) => this.billing!.handleWebhook(rawBody, signature),
       getProviderConfig: () => this.getProviderConfig(),
       listOpenMontageTools: () => this.listOpenMontageTools(),
@@ -768,7 +780,7 @@ export class UmbraOS {
       webhookSecret: config.billing.webhookSecret,
       priceIds: config.billing.priceIds,
       publicUrl: config.billing.publicUrl,
-      onPlanPaid: tier => this.activatePlan(tier),
+      onPlanPaid: (tier, tenantId) => this.activatePlan(tier, tenantId),
     });
     this.dockerDaemon = new DockerDaemon({
       dryRun: !config.docker.enabled,
@@ -1258,6 +1270,20 @@ export class UmbraOS {
     return result;
   }
 
+  /**
+   * Bulk-import connectors from every bundled registry (Smithery + the
+   * official MCP registry — thousands of streamable-HTTP servers). Each
+   * remote server registers as a callable connector through the same MCP
+   * router; missing credentials are resolved lazily from the vault.
+   */
+  async syncExternalMcpSources(opts?: { maxPerSource?: number }): Promise<any> {
+    const result = await this.mcpExternal.sync({
+      maxPerSource: opts?.maxPerSource ?? 0, // 0 = import everything the registries publish
+      sources: DEFAULT_SOURCES,
+    });
+    return result;
+  }
+
   /** Disable a connector: persist enabled:false and drop its live binding. */
   async disconnectMcp(id: string): Promise<any> {
     const entry = await this.configManager.upsertMcpConnector(id, { enabled: false });
@@ -1368,9 +1394,10 @@ export class UmbraOS {
   // ── Model routing / plans / BYOK ───────────────────────────
 
   /** Plan + usage dashboard: spend by slot, budget remaining, metering. */
-  async getPlanUsage(): Promise<any> {
-    const snap = this.modelRouter.snapshot();
+  async getPlanUsage(tenantId?: string): Promise<any> {
+    const snap = tenantId ? this.tenants.status(tenantId).usage! : this.modelRouter.snapshot();
     return {
+      ...(tenantId ? { tenant: tenantId } : {}),
       plan: snap.plan,
       planName: snap.planName,
       monthlyPriceUsd: snap.monthlyPriceUsd,
@@ -1440,10 +1467,33 @@ export class UmbraOS {
    * stack, and the $5/$10 monthly token budget (pre-split per model slot) is
    * applied automatically from the plan profile.
    */
-  async activatePlan(tier: string): Promise<any> {
+  async activatePlan(tier: string, tenantId?: string): Promise<any> {
     const allowed: PlanTier[] = ['free', 'byok', 'pro', 'ultimate'];
     const t = tier as PlanTier;
     if (!allowed.includes(t)) throw new Error(`Unknown plan: ${tier}`);
+
+    // Per-tenant activation: only this tenant's router changes; the node's
+    // own plan (and every other tenant) is untouched. Tenant must already be
+    // registered (POST /api/tenants/register).
+    if (tenantId) {
+      const status = this.tenants.activate(tenantId, t);
+      const usage = status.usage!;
+      getLogger().info({ tenant: tenantId, tier: t }, 'Tenant plan activated — per-tenant token budget assigned');
+      return {
+        tenant: tenantId,
+        plan: t,
+        planName: status.name || usage.planName,
+        budget: {
+          monthlyBudgetUsd: usage.monthlyBudgetUsd,
+          spentUsd: usage.spentUsd,
+          remainingUsd: usage.remainingUsd,
+          slotBudgets: usage.slotBudgets,
+          spentBySlot: usage.spentBySlot,
+        },
+        routing: { enabled: usage.enabled, optimizations: usage.optimizations, maxOutputTokens: usage.maxOutputTokens },
+        deviceLimit: status.deviceLimitLabel,
+      };
+    }
 
     const cm = this.configManager;
     cm.raw.plan.tier = t;
@@ -1685,7 +1735,17 @@ export class UmbraOS {
     const text = (result.text || '').trim();
     if (!text) throw new Error('No speech recognized in the audio');
     const dispatch = await this.dispatchTask(text, opts?.target || 'auto');
-    return { text, dispatch };
+    // Spoken acknowledgement closes the voice loop — the same TTS stack as
+    // POST /api/voice/speak. Best-effort: a missing/quiet TTS engine must
+    // not fail the voice command (headless/cloud nodes just report spoke:false).
+    let spoke = false;
+    try {
+      await this.speakOut(`On it — ${text}`);
+      spoke = true;
+    } catch (err: any) {
+      getLogger().warn({ err: err?.message }, 'Voice-command spoken confirmation failed');
+    }
+    return { text, dispatch, spoke };
   }
 
   // ── Persistent memory recall (past sessions / tasks) ──────────

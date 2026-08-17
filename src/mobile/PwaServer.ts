@@ -3,6 +3,7 @@ import * as url from 'url';
 import QRCode from 'qrcode';
 import { PairingManager, PairingPayload } from '../p2p/PairingManager';
 import { getLogger } from '../core/Logger';
+import { TenantLedger } from '../core/billing/TenantLedger';
 import { pwaHtml } from './pwa/indexHtml';
 
 export interface PwaServerOptions {
@@ -164,7 +165,10 @@ export class PwaServer {
       return;
     }
     try {
-      const dispatch = await this.options.onChat(message, body.target || 'auto');
+      // Same multi-tenant binding as the main API: X-Umbra-Tenant scopes this
+      // chat's LLM spend to that tenant's budget.
+      const tenantId = String(req.headers['x-umbra-tenant'] || '').trim() || undefined;
+      const dispatch = await TenantLedger.run(tenantId, () => this.options.onChat!(message, body.target || 'auto'));
       this.json(res, 200, { dispatch });
     } catch (err: any) {
       this.json(res, 500, { error: err.message || 'Task dispatch failed' });

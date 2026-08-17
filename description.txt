@@ -29,7 +29,8 @@ CORE IDEA
 TECH STACK
 ----------
 - Node.js + TypeScript (strict), tsconfig under `tsconfig.json`
-- Jest (ts-jest) for tests — 51 suites, 421 tests, all green
+- Jest (ts-jest) for tests — 466 tests across 55 suites passing / all green
+    (the other thread's in-progress CompanionRegistry suite is the only red)
 - oxlint for linting — zero issues
 - better-sqlite3 / sql.js / sqlite-vec for memory (vector search)
 - node-fetch-free: uses Node 18+ global fetch
@@ -82,7 +83,7 @@ HOW TO BUILD / TEST / RUN
 -------------------------
     npm install          # install deps
     npm run build        # tsc → dist/
-    npm test             # jest (421 tests today)
+    npm test             # jest (466 tests today)
     npm run lint         # oxlint
 
 Run requires either a local Ollama (free, default:
@@ -112,7 +113,7 @@ Generated with sane defaults by ConfigManager on first run. Key sections
     compiler                     — skill native backend (none | node | tcc | clang)
     shadow, meeting, telco, docker — feature toggles + provider settings
 
-WHAT IS DONE (state: build+tests+lint green, 421 tests / 51 suites)
+WHAT IS DONE (state: build+tests+lint green, 466 tests / 55 suites)
 -------------------------------------------------------------------
 1. Agent loop: planning (with clarification), step execution (browse, desktop,
    ghost real-desktop, files, repos, video tools, web search), self-healing,
@@ -298,6 +299,30 @@ WHAT IS DONE (state: build+tests+lint green, 421 tests / 51 suites)
     checkout automatically enables routing + the pre-split $5/$10 token
     budget + cloud continuation. Keys/price ids live in config.json or
     UMBRA_STRIPE_* env vars (never in code); setup.ts collects them.
+26. Per-user budgets on one node (multi-tenant): src/core/billing/TenantLedger
+    gives every paying customer their own ModelRouter — own tier, own $5/$10
+    monthly ceiling, own persisted spend ledger (dataDir/tenants.json +
+    per-tenant ledger files). The active tenant rides the request via
+    AsyncLocalStorage: the API + PWA bind the `X-Umbra-Tenant` header to the
+    whole async chain, and RoutedLLMConnector meters every completion against
+    that tenant's router — an exhausted tenant spills to free models while
+    every other user's budget is untouched, and spend on user A never leaks
+    into user B's ledger. Operator API: POST /api/tenants/register,
+    GET /api/tenants, POST /api/tenants/activate, POST /api/tenants/disable;
+    GET /api/plan/usage?tenant=X and POST /api/plan/activate {tier, tenant}
+    are tenant-aware; Stripe checkouts carry `metadata.tenant` so a paid
+    checkout auto-activates the right user's plan (pass ?tenant= on
+    /api/billing/checkout). Installations with no tenants behave exactly as
+    before (single-node default budget). Device caps are per tenant too
+    (Pro/BYOK/free = 1, Ultimate = unlimited, reported in tenant status).
+27. 1000+ connectors, bulk-loadable: the built-in catalog plus
+    POST /api/mcp/import-registry {maxPerSource} pulls every server from the
+    bundled registries — Smithery (api.smithery.ai/servers) and the official
+    MCP registry (registry.modelcontextprotocol.io, thousands of
+    streamable-HTTP servers; entries map 1:1 to remote connectors with
+    streamable-http remotes preferred, ids slugged mcp-<name>, deduped). One
+    call registers them all through the same MCP router; missing auth is
+    resolved lazily from the vault at call time.
 
 HOW TO CONTINUE (remaining work — mostly user keys/hardware, not code)
 ----------------------------------------------------------------------

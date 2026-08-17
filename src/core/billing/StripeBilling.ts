@@ -10,8 +10,8 @@ export interface StripeBillingOptions {
   priceIds: Record<string, string>;
   /** Public base URL used for success/cancel redirects (no trailing slash). */
   publicUrl: string;
-  /** Called once a checkout completes — wire to UmbraOS.activatePlan. */
-  onPlanPaid: (tier: string) => Promise<unknown>;
+  /** Called once a checkout completes — wire to UmbraOS.activatePlan (tier, tenantId?). */
+  onPlanPaid: (tier: string, tenantId?: string) => Promise<unknown>;
   /** Injectable fetch for tests. */
   fetchImpl?: typeof fetch;
 }
@@ -44,7 +44,7 @@ export class StripeBilling {
   }
 
   /** Create a Stripe Checkout Session for a plan tier; returns the hosted URL. */
-  async createCheckoutSession(tier: string): Promise<{ url: string; sessionId: string }> {
+  async createCheckoutSession(tier: string, tenantId?: string): Promise<{ url: string; sessionId: string }> {
     if (!this.enabled) {
       throw new Error('Stripe billing not configured — set billing.secretKey, billing.webhookSecret and billing.priceIds in config');
     }
@@ -58,8 +58,9 @@ export class StripeBilling {
       'line_items[0][quantity]': '1',
       'metadata[tier]': tier,
       'success_url': `${base}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      'cancel_url': `${base}/billing/cancel`,
     });
+    if (tenantId) body.set('metadata[tenant]', tenantId);
+    body.set('cancel_url', `${base}/billing/cancel`);
 
     const res = await this.fetch(`${STRIPE_API}/checkout/sessions`, {
       method: 'POST',
@@ -106,17 +107,23 @@ export class StripeBilling {
    * Handle an incoming webhook: verify the signature, then on
    * `checkout.session.completed` activate the paid plan via onPlanPaid(tier).
    */
-  async handleWebhook(rawBody: string, signatureHeader: string): Promise<{ event: string; activated?: string }> {
+  async handleWebhook(rawBody: string, signatureHeader: string): Promise<{ event: string; activated?: string; tenant?: string }> {
     if (!this.verifySignature(rawBody, signatureHeader)) {
       throw new Error('Invalid Stripe webhook signature');
     }
     const event = JSON.parse(rawBody) as any;
     if (event?.type === 'checkout.session.completed') {
       const tier = event.data?.object?.metadata?.tier || event.data?.object?.client_reference_id;
+      // Per-tenant checkouts carry the tenant id in metadata (created by
+      // createCheckoutSession when the operator passes one).
+      const tenant = event.data?.object?.metadata?.tenant;
       if (tier) {
-        await this.opts.onPlanPaid(String(tier));
-        getLogger().info({ tier, session: event.data?.object?.id }, 'Paid plan activated via Stripe webhook');
-        return { event: event.type, activated: String(tier) };
+        await this.opts.onPlanPaid(String(tier), tenant ? String(tenant) : undefined);
+        getLogger().info(
+          { tier, tenant: tenant || undefined, session: event.data?.object?.id },
+          'Paid plan activated via Stripe webhook',
+        );
+        return { event: event.type, activated: String(tier), tenant: tenant ? String(tenant) : undefined };
       }
     }
     return { event: event?.type ?? 'unknown' };

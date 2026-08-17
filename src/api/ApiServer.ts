@@ -3,6 +3,7 @@ import { URL } from 'url';
 import WebSocket from 'ws';
 import { eventBus } from '../core/EventBus';
 import { getLogger } from '../core/Logger';
+import { TenantLedger } from '../core/billing/TenantLedger';
 import { McpJsonRpcResponse } from '../core/mcp/McpServerEndpoint';
 
 export interface ApiServerDeps {
@@ -43,14 +44,23 @@ export interface ApiServerDeps {
   /** Refresh an expiring OAuth token. */
   refreshMcpOauth(id: string): Promise<unknown>;
   syncExternalConnectors(opts?: { maxPerSource?: number }): Promise<unknown>;
+  syncExternalSources(opts?: { maxPerSource?: number }): Promise<unknown>;
   getModelStatus(): Promise<unknown>;
-  getPlanUsage(): Promise<unknown>;
+  getPlanUsage(tenantId?: string): Promise<unknown>;
   testLlm(): Promise<unknown>;
   configureProvider(patch: { provider?: string; endpoint?: string; apiKey?: string; models?: Record<string, string>; tier?: string }): Promise<unknown>;
   /** Activate a plan after payment (assigns the plan's token budget). */
-  activatePlan(tier: string): Promise<unknown>;
+  activatePlan(tier: string, tenantId?: string): Promise<unknown>;
   /** Billing (Stripe) — create a checkout session for a plan tier; returns { url }. */
-  billingCreateCheckout(tier: string): Promise<unknown>;
+  billingCreateCheckout(tier: string, tenantId?: string): Promise<unknown>;
+  /** Multi-tenant: list every registered tenant + its budget/usage/device limit. */
+  tenantsList(): Promise<unknown>;
+  /** Multi-tenant: register (or update) a tenant; returns its status. */
+  tenantsRegister(opts: { id: string; name?: string; tier?: string }): Promise<unknown>;
+  /** Multi-tenant: activate a plan for one tenant. */
+  tenantsActivate(id: string, tier: string): Promise<unknown>;
+  /** Multi-tenant: disable a tenant (falls back to the node default budget). */
+  tenantsDisable(id: string): Promise<unknown>;
   /** Billing (Stripe) — verify + handle a webhook (raw body + signature header). */
   billingHandleWebhook(rawBody: string, signature: string): Promise<unknown>;
   getProviderConfig(): Promise<unknown>;
@@ -222,8 +232,12 @@ export class ApiServer {
       return;
     }
 
+    // Multi-tenant: bind the caller's X-Umbra-Tenant header to the whole
+    // async chain, so every LLM call this request spawns meters against that
+    // tenant's own $5/$10 budget (TenantLedger.current()).
+    const tenantId = String(req.headers['x-umbra-tenant'] || '').trim() || undefined;
     try {
-      const result = await handler(url, body);
+      const result = await TenantLedger.run(tenantId, () => handler(url, body));
       this.sendJson(res, 200, result);
     } catch (err: any) {
       getLogger().warn({ route, err: err.message }, 'API route failed');
@@ -419,19 +433,47 @@ export class ApiServer {
         if (!id) throw new Error('id is required');
         return { connector: await this.deps.disconnectMcp(id) };
       }],
+      [/^POST \/api\/mcp\/import-registry$/, async (_url, body) => ({
+        result: await this.deps.syncExternalSources({
+          maxPerSource: body.maxPerSource !== undefined ? Number(body.maxPerSource) : undefined,
+        }),
+      })],
       [/^GET \/api\/llm\/models$/, async () => this.deps.getModelStatus()],
-      [/^GET \/api\/plan\/usage$/, async () => this.deps.getPlanUsage()],
+      [/^GET \/api\/plan\/usage$/, async url => this.deps.getPlanUsage(url.searchParams.get('tenant') || undefined)],
       [/^POST \/api\/llm\/test$/, async () => this.deps.testLlm()],
       [/^GET \/api\/config\/provider$/, async () => this.deps.getProviderConfig()],
       [/^POST \/api\/plan\/activate$/, async (_url, body) => {
         const tier = String(body.tier || '');
         if (!tier) throw new Error('tier is required');
-        return this.deps.activatePlan(tier);
+        const tenant = body.tenant !== undefined ? String(body.tenant) : undefined;
+        return this.deps.activatePlan(tier, tenant);
       }],
       [/^GET \/api\/billing\/checkout$/, async url => {
         const tier = url.searchParams.get('tier') || '';
         if (!tier) throw new Error('tier is required');
-        return { checkout: await this.deps.billingCreateCheckout(tier) };
+        const tenant = url.searchParams.get('tenant') || undefined;
+        return { checkout: await this.deps.billingCreateCheckout(tier, tenant) };
+      }],
+      [/^GET \/api\/tenants$/, async () => ({ tenants: await this.deps.tenantsList() })],
+      [/^POST \/api\/tenants\/register$/, async (_url, body) => {
+        const id = String(body.id || '').trim();
+        if (!id) throw new Error('tenant id is required');
+        return { tenant: await this.deps.tenantsRegister({
+          id,
+          name: body.name !== undefined ? String(body.name) : undefined,
+          tier: body.tier !== undefined ? String(body.tier) : undefined,
+        }) };
+      }],
+      [/^POST \/api\/tenants\/activate$/, async (_url, body) => {
+        const id = String(body.id || '').trim();
+        const tier = String(body.tier || '');
+        if (!id || !tier) throw new Error('tenant id and tier are required');
+        return { tenant: await this.deps.tenantsActivate(id, tier) };
+      }],
+      [/^POST \/api\/tenants\/disable$/, async (_url, body) => {
+        const id = String(body.id || '').trim();
+        if (!id) throw new Error('tenant id is required');
+        return { tenant: await this.deps.tenantsDisable(id) };
       }],
       [/^POST \/api\/config\/provider$/, async (_url, body) => this.deps.configureProvider({
         provider: body.provider !== undefined ? String(body.provider) : undefined,
