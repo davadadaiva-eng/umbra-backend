@@ -81,6 +81,21 @@ export interface McpConnectorConfig {
   enabled: boolean;
 }
 
+/**
+ * Operator-registered OAuth client credentials for an `oauth` connector.
+ * The client id/secret belong to the Umbra deployment (registered with the
+ * provider's developer console); the end user authorizes their own account.
+ */
+export interface McpOauthClientConfig {
+  clientId: string;
+  clientSecret?: string;
+  /** Override the provider's authorize/token endpoints (required for unknown providers). */
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  /** Override the provider's default scopes. */
+  scopes?: string[];
+}
+
 export interface UmbraConfig {
   provider: ModelProvider;
   models: ModelConfig;
@@ -185,6 +200,12 @@ export interface UmbraConfig {
   mcp: {
     enabled: boolean;
     connectors: McpConnectorConfig[];
+    /**
+     * Per-provider OAuth client credentials, keyed by the connector's
+     * credentialKey (e.g. 'gmail', 'microsoft-365', 'dropbox'). Unknown
+     * providers need authorizeUrl + tokenUrl supplied here as well.
+     */
+    oauthClients?: Record<string, McpOauthClientConfig>;
   };
   shadow: {
     enabled: boolean;
@@ -241,6 +262,19 @@ export interface UmbraConfig {
     socketPath: string;
     defaultCpus: number;
     defaultMemoryMb: number;
+  };
+  /** Paid-plan billing (Stripe checkout + webhook). Secrets live in config.json (git-ignored), never in code. */
+  billing: {
+    enabled?: boolean;
+    provider: 'stripe';
+    /** Stripe secret API key (sk_...). */
+    secretKey: string;
+    /** Stripe webhook signing secret (whsec_...). */
+    webhookSecret: string;
+    /** Stripe price id per plan tier (e.g. { pro: 'price_...', ultimate: 'price_...' }). */
+    priceIds: Record<string, string>;
+    /** Public base URL for success/cancel redirects (defaults to UMBRA_PUBLIC_URL). */
+    publicUrl: string;
   };
   image: {
     enabled: boolean;

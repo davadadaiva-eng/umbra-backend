@@ -27,6 +27,7 @@ function makeConfig(overrides: Partial<UmbraConfig['plan']> = {}): UmbraConfig {
     awareness: { enabled: true },
     telco: { enabled: false, provider: 'telnyx', fromNumber: '' },
     docker: { enabled: false, socketPath: '', defaultCpus: 0, defaultMemoryMb: 0 },
+    billing: { enabled: false, provider: 'stripe', secretKey: '', webhookSecret: '', priceIds: { pro: '', ultimate: '' }, publicUrl: '' },
     image: { enabled: false, provider: 'huggingface', model: '', apiKey: '' },
     hermes: { enabled: true, bin: '', taskTimeoutMs: 300_000, autoDelegate: true },
     devices: { enabled: true, hubPort: 8788, hubUrl: '', name: 'test', role: 'desktop' },

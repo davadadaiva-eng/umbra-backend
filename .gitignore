@@ -21,3 +21,7 @@ mesh/.cargo/
 
 # generated pairing QR
 pair-qr.png
+
+# user API keys (keep umbra-keys.example.json, ignore the real one)
+umbra-keys.json
+umbra-keys.env

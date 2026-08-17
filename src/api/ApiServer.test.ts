@@ -25,6 +25,10 @@ function makeDeps() {
     getMcpCatalog: async (opts?: Record<string, unknown>) => ({ count: 2, active: 0, entries: [], total: 2, categories: ['Developer'], ...opts }),
     connectMcp: async (id: string, opts: { baseUrl?: string; apiKey?: string; enabled?: boolean }) => ({ id, ...opts }),
     disconnectMcp: async (id: string) => ({ id, enabled: false, connected: false }),
+    beginMcpOauth: async (id: string, redirectUri?: string) => ({ connector: { id, authType: 'oauth' }, authorizeUrl: `https://accounts.example.com/auth?state=s1&redirect_uri=${redirectUri ?? ''}`, state: 's1' }),
+    completeMcpOauth: async (code: string, state: string) => (state === 's1' ? { connector: { id: 'gmail' }, connected: true, expiresAt: 123 } : Promise.reject(new Error('Unknown or expired OAuth state'))),
+    getMcpOauthStatus: (id: string) => ({ connected: id === 'gmail', expiresAt: id === 'gmail' ? 123 : undefined }),
+    refreshMcpOauth: async (id: string) => ({ connected: true, id }),
     syncExternalConnectors: async () => ({ registered: 3, sources: ['smithery'], errors: [] }),
     getMeshStatus: async () => ({ running: true, paired_devices: 1 }),
     meshPair: async (ttl = 120) => ({ deviceId: 'mesh-1', exp: Date.now() + ttl * 1000 }),
@@ -48,6 +52,8 @@ function makeDeps() {
     testLlm: async () => ({ ok: true, model: 'test-fast', tokens: 30, latencyMs: 5 }),
     configureProvider: async (patch: Record<string, unknown>) => ({ applied: patch }),
     activatePlan: async (tier: string) => ({ plan: tier, budget: { monthlyBudgetUsd: 5, slotBudgets: { fast: 1, reasoning: 1, frontend: 1, difficult: 2 } } }),
+    billingCreateCheckout: async (tier: string) => ({ url: `https://checkout.stripe.com/c/pay/${tier}`, sessionId: `cs_${tier}` }),
+    billingHandleWebhook: async (raw: string, sig: string) => ({ event: JSON.parse(raw).type, signature: sig }),
     getProviderConfig: async () => ({ provider: 'openai', keys: { openai: '••••abcd' } }),
     listOpenMontageTools: async () => ({ installed: true, count: 2, tools: [{ name: 'video_compose' }, { name: 'piper_tts' }] }),
     generateImage: async (prompt: string) => ({ imagePath: `/tmp/${prompt.toLowerCase().replace(/\s+/g, '-')}.png`, provider: 'huggingface', model: 'FLUX.1-schnell' }),
@@ -99,10 +105,10 @@ function makeDeps() {
   };
 }
 
-async function api(path2: string, method = 'GET', body?: unknown) {
+async function api(path2: string, method = 'GET', body?: unknown, extraHeaders: Record<string, string> = {}) {
   const res = await fetch(`http://127.0.0.1:${PORT}${path2}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: body ? { 'Content-Type': 'application/json', ...extraHeaders } : extraHeaders,
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   return { status: res.status, json: (await res.json()) as any };
@@ -225,6 +231,40 @@ describe('ApiServer', () => {
     expect(res.json.sync.sources).toContain('smithery');
   });
 
+  test('mcp oauth start requires an id and returns an authorize URL', async () => {
+    const missing = await api('/api/mcp/oauth/start', 'POST', {});
+    expect(missing.status).toBe(500);
+    const res = await api('/api/mcp/oauth/start', 'POST', { id: 'gmail' });
+    expect(res.status).toBe(200);
+    expect(res.json.oauth.authorizeUrl).toContain('accounts.example.com');
+    expect(res.json.oauth.state).toBe('s1');
+  });
+
+  test('mcp oauth callback completes with code + state', async () => {
+    const res = await api('/api/mcp/oauth/callback?code=abc&state=s1');
+    expect(res.status).toBe(200);
+    expect(res.json.oauth.connected).toBe(true);
+    expect(res.json.oauth.connector.id).toBe('gmail');
+  });
+
+  test('mcp oauth callback rejects a bad state', async () => {
+    const res = await api('/api/mcp/oauth/callback?code=abc&state=bogus');
+    expect(res.status).toBe(500);
+  });
+
+  test('mcp oauth status is masked and keyed by connector id', async () => {
+    const res = await api('/api/mcp/oauth/status?id=gmail');
+    expect(res.status).toBe(200);
+    expect(res.json.oauth.connected).toBe(true);
+    expect(res.json.oauth).not.toHaveProperty('accessToken');
+  });
+
+  test('mcp oauth refresh posts the connector id', async () => {
+    const res = await api('/api/mcp/oauth/refresh', 'POST', { id: 'gmail' });
+    expect(res.status).toBe(200);
+    expect(res.json.oauth.connected).toBe(true);
+  });
+
   test('llm models returns budget + routing status', async () => {
     const res = await api('/api/llm/models');
     expect(res.status).toBe(200);
@@ -256,6 +296,28 @@ describe('ApiServer', () => {
     expect(res.status).toBe(200);
     expect(res.json.applied.provider).toBe('openai');
     expect(res.json.applied.apiKey).toBe('sk-123');
+  });
+
+  test('billing checkout returns a Stripe hosted URL for the tier', async () => {
+    const res = await api('/api/billing/checkout?tier=pro');
+    expect(res.status).toBe(200);
+    expect(res.json.checkout.url).toContain('checkout.stripe.com');
+    expect(res.json.checkout.sessionId).toBe('cs_pro');
+  });
+
+  test('billing checkout requires a tier', async () => {
+    const res = await api('/api/billing/checkout');
+    expect(res.status).toBe(500);
+  });
+
+  test('billing webhook passes the raw body + signature to the handler', async () => {
+    const res = await api('/api/billing/webhook', 'POST', {
+      type: 'checkout.session.completed',
+      data: { object: { metadata: { tier: 'pro' } } },
+    }, { 'stripe-signature': 't=1700000000,v1=abc123' });
+    expect(res.status).toBe(200);
+    expect(res.json.event).toBe('checkout.session.completed');
+    expect(res.json.signature).toBe('t=1700000000,v1=abc123');
   });
 
   test('plan activate assigns the token budget after payment', async () => {

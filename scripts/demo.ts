@@ -72,6 +72,7 @@ function demoConfig(endpoint: string): UmbraConfig {
     awareness: { enabled: true },
     telco: { enabled: false, provider: 'telnyx', fromNumber: '' },
     docker: { enabled: false, socketPath: '', defaultCpus: 0, defaultMemoryMb: 0 },
+    billing: { enabled: false, provider: 'stripe', secretKey: '', webhookSecret: '', priceIds: { pro: '', ultimate: '' }, publicUrl: '' },
     devices: { enabled: false, hubPort: 0, hubUrl: '', name: 'demo', role: 'desktop' },
     image: { enabled: false, provider: 'huggingface', model: '', apiKey: '' },
     voice: { enabled: false, sttProvider: 'none', sttEndpoint: '', sttApiKey: '', sttModel: 'whisper-1' },

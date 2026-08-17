@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { UmbraConfig, ModelProvider, McpConnectorConfig } from '../types';
+import { UmbraConfig, ModelProvider, McpConnectorConfig, McpOauthClientConfig } from '../types';
 import { getLogger } from '../core/Logger';
 import { MCP_CATALOG, McpCatalogEntry } from '../core/mcp/McpCatalog';
 import { DEFAULT_ROUTING } from '../core/metering/ModelRouter';
@@ -89,6 +89,7 @@ const DEFAULT_CONFIG: UmbraConfig = {
   mcp: {
     enabled: true,
     connectors: [],
+    oauthClients: {},
   },
   shadow: {
     enabled: true,
@@ -124,6 +125,17 @@ const DEFAULT_CONFIG: UmbraConfig = {
     socketPath: '',
     defaultCpus: 2,
     defaultMemoryMb: 2048,
+  },
+  billing: {
+    enabled: false,
+    provider: 'stripe',
+    secretKey: process.env['UMBRA_STRIPE_SECRET_KEY'] || '',
+    webhookSecret: process.env['UMBRA_STRIPE_WEBHOOK_SECRET'] || '',
+    priceIds: {
+      pro: process.env['UMBRA_STRIPE_PRICE_PRO'] || '',
+      ultimate: process.env['UMBRA_STRIPE_PRICE_ULTIMATE'] || '',
+    },
+    publicUrl: process.env['UMBRA_PUBLIC_URL'] || '',
   },
   image: {
     enabled: false,
@@ -249,6 +261,22 @@ export class ConfigManager {
     await this.saveConfig();
   }
 
+  /** Persist Stripe billing settings (keys, price ids, public URL). Secrets stay in config.json. */
+  async updateBilling(patch: {
+    enabled?: boolean;
+    secretKey?: string;
+    webhookSecret?: string;
+    priceIds?: Partial<Record<string, string>>;
+    publicUrl?: string;
+  }): Promise<void> {
+    if (patch.enabled !== undefined) this.config.billing.enabled = patch.enabled;
+    if (patch.secretKey !== undefined) this.config.billing.secretKey = patch.secretKey;
+    if (patch.webhookSecret !== undefined) this.config.billing.webhookSecret = patch.webhookSecret;
+    if (patch.publicUrl !== undefined) this.config.billing.publicUrl = patch.publicUrl;
+    if (patch.priceIds) Object.assign(this.config.billing.priceIds, patch.priceIds);
+    await this.saveConfig();
+  }
+
   /**
    * Reactivate every catalog connector into config (enabled: false) so the UI
    * can list all of them. Pre-existing entries keep their enabled/baseUrl.
@@ -277,6 +305,19 @@ export class ConfigManager {
     Object.assign(connector, patch);
     await this.saveConfig();
     return connector;
+  }
+
+  /** Persist (or update) an OAuth client credential for a connector. */
+  async upsertMcpOauthClient(key: string, patch: Partial<McpOauthClientConfig>): Promise<McpOauthClientConfig> {
+    const existing = this.config.mcp.oauthClients?.[key] ?? { clientId: '' };
+    const next = { ...existing, ...patch };
+    this.config.mcp.oauthClients = { ...this.config.mcp.oauthClients, [key]: next };
+    await this.saveConfig();
+    return next;
+  }
+
+  getMcpOauthClient(key: string): McpOauthClientConfig | undefined {
+    return this.config.mcp.oauthClients?.[key];
   }
 
   private fromCatalog(entry: McpCatalogEntry): McpConnectorConfig {
