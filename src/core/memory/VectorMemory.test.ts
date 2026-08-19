@@ -64,6 +64,25 @@ describe('VectorMemory', () => {
     expect(results[0].distance).toBeLessThanOrEqual(1);
   });
 
+  it('keeps vectors across a DB reopen (restart) — regression: index was dropped', async () => {
+    const reopenPath = tmpDb('reopen.db');
+    const first = new VectorMemory(reopenPath, { embed: fakeEmbed });
+    first.initialize();
+    await first.addVector('note', 'n1', 'user prefers dark theme in their code editor');
+    await first.addVector('note', 'n2', 'invoice for the F24 tax payment');
+    first.close();
+
+    // Simulate an app restart: new instance over the same file. The vector
+    // table must survive (previously ensureVecTable dropped it on first use).
+    const second = new VectorMemory(reopenPath, { embed: fakeEmbed });
+    second.initialize();
+    const results = await second.searchSimilar('dark mode theme preference', { k: 3, kind: 'note' });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].refId).toBe('n1');
+    expect(second.getVectorCount('note')).toBe(2);
+    second.close();
+  });
+
   it('falls back to text search when embedding is absent', async () => {
     const noEmbed = new VectorMemory(tmpDb('noembed.db'));
     noEmbed.initialize();

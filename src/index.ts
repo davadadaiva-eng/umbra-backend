@@ -90,6 +90,7 @@ import { ExternalRegistrySync, DEFAULT_SOURCES } from './core/mcp/ExternalRegist
 import { OAuthConnector, OAuthTokenSet } from './core/mcp/OAuthConnector';
 import { MCP_CATALOG } from './core/mcp/McpCatalog';
 import { CredentialVault } from './core/vault/CredentialVault';
+import { getStableHwid } from './native/win32/HardwareId';
 import { LiveShadowEngine } from './core/shadow/LiveShadowEngine';
 import { MeetingAgent } from './core/meeting/MeetingAgent';
 import { TelnyxClient } from './core/telco/TelnyxClient';
@@ -591,7 +592,7 @@ export class UmbraOS {
     // ── Credential Vault (AES-256-GCM, HWID-bound) ────────────
     this.credVault = new CredentialVault({
       dataDir: config.paths.dataDir,
-      hwid: process.env['UMBRA_HWID'] || 'local-machine',
+      hwid: getStableHwid(process.env['UMBRA_HWID']),
     });
     try {
       this.credVault.unlock();

@@ -18,6 +18,7 @@ import * as readline from 'readline';
 import * as path from 'path';
 import { ConfigManager } from '../src/config/ConfigManager';
 import { CredentialVault } from '../src/core/vault/CredentialVault';
+import { getStableHwid } from '../src/native/win32/HardwareId';
 import { DEFAULT_ROUTING } from '../src/core/metering/ModelRouter';
 import { ModelProvider, PlanTier, RoutingConfig, RoutingTier } from '../src/types';
 
@@ -284,7 +285,7 @@ async function main(): Promise<void> {
   await cm.saveConfig();
 
   if (telnyxKey) {
-    const vault = new CredentialVault({ dataDir, hwid: process.env.UMBRA_HWID || 'local-machine' });
+    const vault = new CredentialVault({ dataDir, hwid: getStableHwid(process.env.UMBRA_HWID) });
     vault.unlock();
     const existing = vault.find('telnyx');
     vault.set({ service: 'telnyx', username: 'api-key', secret: telnyxKey }, existing?.id);

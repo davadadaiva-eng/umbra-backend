@@ -252,8 +252,34 @@ export class VectorMemory {
     }
   }
 
+  /** Read the dimension of an existing vec_items table, or null if absent. */
+  private probeVecDim(): number | null {
+    try {
+      const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec_items'").get() as any;
+      if (!row || typeof row.sql !== 'string') return null;
+      const m = /float\[(\d+)\]/.exec(row.sql);
+      return m ? Number(m[1]) : null;
+    } catch {
+      return null;
+    }
+  }
+
   private ensureVecTable(dim: number): void {
     if (this.vecTableDim === dim) return;
+    // After a restart vecTableDim is unknown — reuse the persisted table when
+    // its dimension already matches (never drop stored embeddings just
+    // because we forgot the dim). Only rebuild when the embedder's dimension
+    // genuinely changed (e.g. a different embedding model was configured).
+    const existing = this.probeVecDim();
+    if (existing !== null && existing === dim) {
+      this.vecTableDim = dim;
+      this.knnStmts.clear();
+      this.insertVecStmt = null;
+      return;
+    }
+    if (existing !== null) {
+      getLogger().warn({ from: existing, to: dim }, 'Embedding dimension changed — rebuilding vector index');
+    }
     this.db.exec('DROP TABLE IF EXISTS vec_items');
     this.db.exec(`CREATE VIRTUAL TABLE vec_items USING vec0(id INTEGER PRIMARY KEY, embedding float[${dim}])`);
     this.vecTableDim = dim;
