@@ -28,6 +28,7 @@ export type UmbraEvents = {
   'screen:cursor': (payload: { x: number; y: number }) => void;
   'meeting:order': (payload: Record<string, unknown>) => void;
   'meeting:transcript': (payload: Record<string, unknown>) => void;
+  'chrome:telemetry': (payload: Record<string, unknown>) => void;
 };
 
 export class EventBus {

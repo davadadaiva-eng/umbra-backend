@@ -111,6 +111,19 @@ img#live{width:100%;border-radius:10px;background:#000;display:block}
     <div id="deviceInfo" class="muted">Loading…</div>
   </div>
 
+  <div class="card" id="voiceCard">
+    <h2>Push-to-talk
+      <button class="secondary" id="btnRefreshVoice" style="float:right;padding:4px 10px">Refresh</button>
+    </h2>
+    <div id="voiceInfo" class="muted">Loading…</div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="pttCombo" placeholder="Hotkey, e.g. Ctrl+Shift+V" style="flex:1"/>
+      <button id="btnSetPtt">Enable</button>
+      <button class="secondary" id="btnDisablePtt">Disable</button>
+    </div>
+    <div class="muted" style="margin-top:6px" id="pttMsg">Hold the hotkey, speak, release — Umbra transcribes, routes and runs the task.</div>
+  </div>
+
   <div class="card" id="viewCard" style="display:none">
     <h2>Live view <span class="muted">(compressed frames)</span></h2>
     <img id="live" alt="live" width="100%"/>
@@ -486,8 +499,41 @@ function loadDeviceInfo(){
     el.textContent = 'Devices unavailable: ' + e.message;
   });
 }
-document.getElementById('btnRefreshDevices').addEventListener('click', loadDeviceInfo);
-loadDeviceInfo();
+// ── Voice / push-to-talk settings card ─────────────────────
+function loadVoiceStatus(){
+  var el = document.getElementById('voiceInfo');
+  if (!el) return;
+  fetch('/api/voice/ptt').then(function(r){ return r.json(); }).then(function(j){
+    var p = j.pushToTalk || {};
+    var state = p.enabled ? '<span style="color:#30a46c">armed</span>' : '<span style="color:#9ba1aa">off</span>';
+    var mic = p.micOk ? '<span style="color:#30a46c">ok</span>' : '<span style="color:#e5484d">no mic / not configured</span>';
+    el.innerHTML = 'State: <b>' + state + '</b> · Combo: <b>' + (p.combo || '—') + '</b>' +
+      '<br/>Capturing: <b>' + (p.capturing ? 'yes' : 'no') + '</b> · Mic: ' + mic;
+    document.getElementById('pttCombo').value = p.combo || '';
+  }).catch(function(e){
+    el.textContent = 'Voice status unavailable: ' + e.message;
+  });
+}
+function setPushToTalk(combo, enabled){
+  var msg = document.getElementById('pttMsg');
+  msg.textContent = 'Saving…';
+  fetch('/api/voice/ptt', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({combo: combo, enabled: !!enabled})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (j.error){ msg.textContent = 'Failed: ' + j.error; return; }
+      msg.textContent = enabled ? 'Push-to-talk enabled — hold ' + combo + ' to talk.' : 'Push-to-talk disabled.';
+      loadVoiceStatus();
+    })
+    .catch(function(e){ msg.textContent = 'Failed: ' + e.message; });
+}
+document.getElementById('btnRefreshVoice').addEventListener('click', loadVoiceStatus);
+document.getElementById('btnSetPtt').addEventListener('click', function(){
+  setPushToTalk(document.getElementById('pttCombo').value.trim(), true);
+});
+document.getElementById('btnDisablePtt').addEventListener('click', function(){
+  setPushToTalk('', false);
+});
+loadVoiceStatus();
 
 // ── UI wiring ───────────────────────────────────────────────
 document.getElementById('btnScreenshot').addEventListener('click', function(){

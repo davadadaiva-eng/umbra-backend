@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      padding: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #1a1a2e;
+    }
+    .logo {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    .title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .subtitle {
+      font-size: 11px;
+      color: #888;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+    }
+    .status-label {
+      font-size: 13px;
+      color: #aaa;
+    }
+    .status-value {
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .connected { color: #00b894; }
+    .disconnected { color: #e17055; }
+    .toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-top: 1px solid #1a1a2e;
+      margin-top: 8px;
+    }
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: #2d2d3f;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle.on { background: #6c5ce7; }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 18px;
+      height: 18px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle.on::after { transform: translateX(20px); }
+    .host-input {
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 8px;
+      background: #12121c;
+      border: 1px solid #2d2d3f;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    .host-input:focus {
+      outline: none;
+      border-color: #6c5ce7;
+    }
+    .section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #1a1a2e;
+    }
+    .section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .stat-box {
+      background: #12121c;
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+    .stat-number {
+      font-size: 20px;
+      font-weight: 700;
+      color: #a29bfe;
+    }
+    .stat-label {
+      font-size: 10px;
+      color: #888;
+      margin-top: 2px;
+    }
+    .footer {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid #1a1a2e;
+      text-align: center;
+      font-size: 10px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">🌘</div>
+    <div>
+      <div class="title">Umbra Browser Link</div>
+      <div class="subtitle">Browser telemetry for Umbra OS</div>
+    </div>
+  </div>
+
+  <div class="status-row">
+    <span class="status-label">Connection</span>
+    <span id="connStatus" class="status-value disconnected">Checking…</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">Session</span>
+    <span id="sessionId" class="status-value" style="font-size:11px; color:#888">—</span>
+  </div>
+
+  <div class="toggle-row">
+    <span class="status-label">Enable tracking</span>
+    <div id="toggle" class="toggle on"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Umbra Server</div>
+    <input id="hostInput" class="host-input" type="text" placeholder="http://127.0.0.1:8787" />
+  </div>
+
+  <div class="section">
+    <div class="section-title">Live Stats</div>
+    <div class="stat-grid">
+      <div class="stat-box">
+        <div id="statEvents" class="stat-number">0</div>
+        <div class="stat-label">Queued Events</div>
+      </div>
+      <div class="stat-box">
+        <div id="statTabs" class="stat-number">0</div>
+        <div class="stat-label">Open Tabs</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">Umbra OS v0.1.0 · Local-first AI</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

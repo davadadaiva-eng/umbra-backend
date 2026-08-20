@@ -36,7 +36,7 @@ describe('VoiceStackHealth', () => {
     );
     const report = await h.refresh();
     expect(report.ok).toBe(true);
-    expect(report.components.map(c => c.status)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok']);
+    expect(report.components.map(c => c.status)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok', 'disabled']);
   });
 
   it('fails the stack when a configured component errors', async () => {
@@ -97,5 +97,23 @@ describe('VoiceStackHealth', () => {
     const snap = h.snapshot()!;
     expect(snap.ok).toBe(true);
     expect(snap.components.find(c => c.component === 'tts')!.ok).toBe(true);
+  });
+
+  it('fails the stack when push-to-talk is configured but no capture device exists', async () => {
+    const h = make(
+      { micEnabled: true },
+      { mic: async () => ({ ok: false, error: 'no capture endpoint found' }) },
+    );
+    const report = await h.refresh();
+    expect(report.ok).toBe(false);
+    const mic = report.components.find(c => c.component === 'mic')!;
+    expect(mic.status).toBe('error');
+    expect(mic.error).toContain('capture endpoint');
+  });
+
+  it('reports the mic as disabled when push-to-talk is not configured', async () => {
+    const h = make();
+    const report = await h.refresh();
+    expect(report.components.find(c => c.component === 'mic')!.status).toBe('disabled');
   });
 });

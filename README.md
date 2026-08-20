@@ -48,9 +48,10 @@ UI contract: [`docs/ui-contract.md`](docs/ui-contract.md).
 - **Preview stream** — the read-only UI can watch Desktop 2 live and send commands
   (consent-gated).
 - **Voice stack** — local STT/TTS/ASR via VibeVoice (voice cloning), whisper.cpp and
-  Windows SAPI; hands-free voice commands and meeting transcription. A `VoiceStackHealth`
-  probe (STT / TTS / ASR / audio cable / loopback) runs at boot and is reported in
-  `/api/status`.
+  Windows SAPI; hands-free voice commands, push-to-talk ("tap to listen") and meeting
+  transcription. A `VoiceStackHealth` probe (STT / TTS / ASR / audio cable / loopback /
+  mic) runs at boot and is reported in `/api/status`; the phone PWA can arm/disarm the
+  push-to-talk hotkey from its settings card.
 - **Meetings** — attend end-to-end: plan an agenda, live digest, action items and
   decisions, with speaker diarization from VibeVoice-ASR ("who said what and when") plus
   mute / raise-hand / screen-share controls.
@@ -86,7 +87,7 @@ model roles (`fast`, `vision`, `reasoning`), workspace (displays, CPU/GPU limits
 | `npm run build` | TypeScript → `dist/` |
 | `npm run dev` | ts-node live run |
 | `npm start` | Run from `dist/` |
-| `npm test` | Jest — 466 tests / 55 suites (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api, billing, tenants) |
+| `npm test` | Jest — 496 tests / 57 suites (agent, metering, MCP, voice, meetings, skills, graphify, p2p, api, billing, tenants) |
 | `npm run lint` | oxlint over `src/` |
 
 Integration tests (live system — build first, then `node scripts/<name>`; requires the

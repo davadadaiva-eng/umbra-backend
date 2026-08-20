@@ -142,10 +142,14 @@ export class CompanionRegistry {
 
   private scoreProfile(profile: CompanionProfile, routed: RouteResult): number {
     const owned = new Set(profile.skills);
+    // Profile skills are bare names ("web-research") while stack ids are
+    // domain-prefixed ("research.web-research") — match both so ownership
+    // resolves regardless of which form the profile was declared in.
+    const owns = (id: string): boolean => owned.has(id) || owned.has(id.slice(id.indexOf('.') + 1));
     let score = 0;
-    if (routed.skill && owned.has(routed.skill.id)) score += routed.score * 2;
+    if (routed.skill && owns(routed.skill.id)) score += routed.score * 2;
     for (const candidate of routed.candidates) {
-      if (owned.has(candidate.id)) score += 0.5;
+      if (owns(candidate.id)) score += 0.5;
     }
     return score;
   }

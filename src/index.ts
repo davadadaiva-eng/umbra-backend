@@ -12,11 +12,13 @@ import { TaskPlanner } from './core/agent/TaskPlanner';
 import { AgentRuntime } from './core/agent/AgentRuntime';
 import { TaskStore } from './core/agent/TaskStore';
 import { HermesAgentBridge } from './core/agent/HermesAgent';
+import { ChromeExtensionBridge } from './core/browser/ChromeExtensionBridge';
 import { WorkspaceFiles } from './core/agent/WorkspaceFiles';
 import { ReposManager } from './core/agent/ReposManager';
 import { InjectionGuard } from './core/agent/InjectionGuard';
 import { ConsentGate } from './core/agent/ConsentGate';
 import { ProactiveAgent } from './core/agent/ProactiveAgent';
+import { IssueWatcher } from './core/agent/IssueWatcher';
 import { VirtualDisplayManager } from './core/workspace/VirtualDisplayManager';
 import { InputGuard } from './core/workspace/InputGuard';
 import { SwarmManager } from './core/workspace/SwarmManager';
@@ -62,7 +64,9 @@ import { VoiceboxClient } from './core/voice/VoiceboxClient';
 import { VibeVoiceAsr } from './core/voice/VibeVoiceAsr';
 import { WhisperAsr } from './core/voice/WhisperAsr';
 import { VoiceStackHealth } from './core/voice/VoiceStackHealth';
+import { PushToTalkService } from './core/voice/PushToTalkService';
 import { LoopbackRecorder } from './core/audio/LoopbackRecorder';
+import { MicRecorder } from './core/audio/MicRecorder';
 import { AudioRouter, findCable } from './core/audio/AudioRouter';
 import { CommandHUD } from './overlay/CommandHUD';
 import { GlobalHotkey } from './overlay/GlobalHotkey';
@@ -81,6 +85,7 @@ import { SkillCompiler } from './core/skill/SkillCompiler';
 import { CppBackend, NoopBackend } from './core/skill/NativeCompiler';
 import { SkillRecorder } from './core/skill/SkillRecorder';
 import { SkillRouter } from './core/skill/SkillRouter';
+import { CompanionRegistry } from './core/skill/CompanionRegistry';
 import { SkillContentIndex } from './core/skill/SkillContentIndex';
 import { McpRegistry } from './core/mcp/McpRegistry';
 import { McpRouter } from './core/mcp/McpRouter';
@@ -116,6 +121,8 @@ export class UmbraOS {
   private repos!: ReposManager;
   private consent!: ConsentGate;
   private proactive!: ProactiveAgent;
+  private issueWatcher?: IssueWatcher;
+  private companionRegistry?: CompanionRegistry;
   private taskStore!: TaskStore;
   private headless: boolean = false;
   private role: 'desktop' | 'cloud' = 'desktop';
@@ -138,6 +145,7 @@ export class UmbraOS {
   private streamer?: PreviewStreamer;
   private hud?: CommandHUD;
   private hotkey?: GlobalHotkey;
+  private pushToTalkHotkey?: GlobalHotkey;
   private openmontage!: OpenMontageBridge;
   private videoProducer!: VideoProducer;
   private imageGen!: ImageGenerator;
@@ -167,6 +175,8 @@ export class UmbraOS {
   private meetings!: MeetingAgent;
   private meetingCompanion?: MeetingCompanion;
   private loopbackRecorder?: LoopbackRecorder;
+  private micRecorder?: MicRecorder;
+  private pushToTalk?: PushToTalkService;
   private audioRouter?: AudioRouter;
   /** Default mic before routeMeetingMic switched it to the cable (restored on leave). */
   private savedMicDeviceId?: string;
@@ -183,6 +193,7 @@ export class UmbraOS {
   private tenants!: TenantLedger;
   private metering!: MeteringService;
   private modelRouter!: ModelRouter;
+  private chromeBridge!: ChromeExtensionBridge;
   private startedAt: number = Date.now();
   private resumedTasks: number = 0;
 
@@ -358,6 +369,11 @@ export class UmbraOS {
         },
       );
     }
+
+    // ── Chrome Extension Bridge (browser telemetry receiver) ──
+    this.chromeBridge = new ChromeExtensionBridge(this.memory, this.knowledge, this.privacy, {
+      dataDir: config.paths.dataDir,
+    });
 
     // ── Fast Engine (browser-use bridge in the user's Chrome) ──
     this.fastEngine = new BrowserUseBridge(
@@ -584,6 +600,10 @@ export class UmbraOS {
       meshPairDemo: () => this.meshPairDemo(),
       meshRevoke: deviceId => this.meshRevoke(deviceId),
       mcpHandle: message => this.mcpServer.handle(message),
+      handleChromeTelemetry: (events, sessionId, cookieSnapshot) =>
+        this.chromeBridge.handleTelemetry(events as any, sessionId, cookieSnapshot as any),
+      getChromeExtensionStatus: () => this.chromeBridge.getStatus(),
+      getChromeLoginEvents: () => this.chromeBridge.getLoginEvents(),
       shutdown: () => {
         if (process.listenerCount('SIGINT') > 0) process.emit('SIGINT');
       },
@@ -598,6 +618,38 @@ export class UmbraOS {
       this.credVault.unlock();
     } catch (err) {
       getLogger().warn({ err }, 'Credential vault locked — vault-backed connectors will be disabled');
+    }
+
+    // ── GitHub issue → task loop (watch repos, ship PRs) ──────
+    // New open issues are routed through CompanionRegistry, dispatched as
+    // tasks (same path as POST /api/chat), and their completed summary is
+    // posted back as an issue comment. Gated on config.github.enabled with
+    // the PAT read from the credential vault.
+    if (config.github?.enabled && (config.github.repositories?.length ?? 0) > 0) {
+      this.companionRegistry = new CompanionRegistry();
+      const gh = config.github;
+      this.issueWatcher = new IssueWatcher({
+        repositories: gh.repositories ?? [],
+        stateFile: path.join(config.paths.dataDir, 'github-watcher-state.json'),
+        token: () =>
+          this.credVault.isUnlocked ? (this.credVault.find(gh.tokenService ?? 'github')?.secret ?? null) : null,
+        requestConsent: reason => this.consent.request(reason),
+        route: title => this.companionRegistry!.best(title).id,
+        dispatchTask: async description => {
+          const dispatch = await this.dispatchTask(description, 'auto');
+          return dispatch.taskId;
+        },
+        pollIntervalMs: gh.pollIntervalMs,
+        labels: gh.labels,
+        assignedTo: gh.assignedTo,
+        consentRequired: gh.consentRequired !== false,
+        commentResults: gh.commentResults !== false,
+      });
+      // When a dispatched task completes, post its summary back on the issue.
+      eventBus.on('task:completed', (taskId: string, result: unknown) => {
+        const summary = result && typeof result === 'object' ? (result as { summary?: string }).summary : undefined;
+        void this.issueWatcher?.postResult(taskId, summary ?? '');
+      });
     }
 
     // ── MCP registry + router (vault-backed HTTP connectors) ──
@@ -668,6 +720,8 @@ export class UmbraOS {
         onCancelTask: taskId => this.agent.cancelTask(taskId),
         onRetryTask: (taskId, description) => this.agent.retryTask(taskId, description),
         getDeviceInfo: () => this.getDevices(),
+        getPushToTalkStatus: () => this.getPushToTalkStatus(),
+        onSetPushToTalk: (combo, enabled) => this.updatePushToTalk(combo, enabled),
       });
       this.pwa = pwa;
       pwa.start();
@@ -860,6 +914,7 @@ export class UmbraOS {
           asrProvider: config.voice.asrProvider ?? 'none',
           audioCable: config.meeting.audioCable ?? 'none',
           loopbackEnabled: config.meeting.loopbackEnabled === true,
+          micEnabled: config.voice.enabled === true && Boolean(config.voice.pushToTalk),
         },
         probes: {
           stt: async () => {
@@ -955,10 +1010,28 @@ export class UmbraOS {
               ? { ok: true, detail: 'WASAPI loopback capture available' }
               : { ok: false, error: 'Loopback capture unavailable (WASAPI disabled or blocked — try VB-Cable/Stereo Mix)' };
           },
+          mic: async () => {
+            if (!this.audioRouter) return { ok: false, error: 'Audio router unavailable' };
+            const devices = await this.audioRouter.listDevices('capture').catch(() => []);
+            return devices.length > 0
+              ? {
+                  ok: true,
+                  detail: `Microphone present: ${devices.map(d => d.name).slice(0, 3).join(', ')}${devices.length > 3 ? '…' : ''}`,
+                }
+              : { ok: false, error: 'No microphone capture device found — push-to-talk cannot hear you' };
+          },
         },
       });
       // Run once at boot (never blocks startup on failure).
       this.voiceStackHealth.refresh().catch(() => getLogger().debug('Voice-stack health check failed'));
+
+      // ── Push-to-talk ("tap to listen"): hold the hotkey, speak, release —
+      //    the microphone is captured (MicRecorder, waveIn), transcribed by
+      //    the configured STT, routed through the skill stack, submitted as a
+      //    task, and answered back with a spoken confirmation. Desktop-only
+      //    (Windows waveIn) and gated on voice.enabled + a configured
+      //    pushToTalk hotkey + an available STT provider. ──
+      this.armPushToTalk(config.voice.pushToTalk || '');
     }
 
     // ── Start subsystems ─────────────────────────────────────
@@ -990,6 +1063,7 @@ export class UmbraOS {
     this.healer.start(5000);
     this.audio.start();
     this.proactive?.start();
+    this.issueWatcher?.start();
 
     // ── Live Shadowing (watch + takeover the real screen) ────
     if (config.shadow.enabled && this.shadow) {
@@ -1091,6 +1165,8 @@ export class UmbraOS {
       },
       devices: this.deviceHub ? this.deviceHub.getStatus() : null,
       voiceStack: this.voiceStackHealth ? this.voiceStackHealth.snapshot() : null,
+      pushToTalk: this.getPushToTalkStatus(),
+      chromeExtension: this.chromeBridge.getStatus(),
     };
   }
 
@@ -1707,6 +1783,83 @@ export class UmbraOS {
     }
     if (refresh) await this.voiceStackHealth.refresh();
     return this.voiceStackHealth.snapshot();
+  }
+
+  /** Push-to-talk runtime state for /api/status and the PWA settings card. */
+  getPushToTalkStatus(): Record<string, unknown> {
+    const combo = this.configManager.raw.voice.pushToTalk || '';
+    let micOk = false;
+    const snapshot = this.voiceStackHealth?.snapshot();
+    if (snapshot) {
+      const mic = snapshot.components.find(c => c.component === 'mic');
+      micOk = mic?.configured === true && mic?.ok === true;
+    }
+    return {
+      enabled: this.configManager.raw.voice.enabled === true && Boolean(combo),
+      combo,
+      capturing: this.pushToTalk?.isCapturing ?? false,
+      micOk,
+    };
+  }
+
+  /**
+   * (Re)arm push-to-talk: register the hotkey when a combo is configured and
+   * the STT provider is available; otherwise disarm. Idempotent — safe at
+   * boot and again at runtime from the phone toggle.
+   */
+  private armPushToTalk(combo: string): void {
+    this.pushToTalkHotkey?.stop();
+    this.pushToTalkHotkey = undefined;
+    this.pushToTalk = undefined;
+    const config = this.configManager.raw;
+    if (!combo || !config.voice.enabled || !this.speechToText?.available) return;
+    try {
+      this.micRecorder = new MicRecorder();
+      this.pushToTalk = new PushToTalkService({
+        recorder: this.micRecorder,
+        stt: {
+          transcribe: async req => {
+            const r = await this.speechToText!.transcribe(req);
+            return { text: r.text };
+          },
+        },
+        router: {
+          route: async (text: string) => {
+            const routed = this.skillRouter.route(text);
+            return routed.direct && routed.skill ? `${routed.skill.name}: ${text}` : null;
+          },
+        },
+        submitTask: async (description: string) => {
+          const dispatch = await this.dispatchTask(description, 'auto');
+          return dispatch.taskId;
+        },
+        speak: text => this.speakOut(text),
+        confirm: () => {
+          // Terminal bell — a zero-dependency confirmation beep.
+          try { process.stdout.write('\x07'); } catch { }
+        },
+        format: 'wav',
+      });
+      this.pushToTalkHotkey = new GlobalHotkey({
+        combo,
+        pollMs: 100,
+        onPress: () => void this.pushToTalk!.start(),
+        onRelease: () => void this.pushToTalk!.stop(),
+      });
+      this.pushToTalkHotkey.start();
+      getLogger().info({ combo }, 'Push-to-talk hotkey registered');
+    } catch (err: any) {
+      getLogger().warn({ err: err.message }, 'Push-to-talk disabled — could not register the hotkey');
+    }
+  }
+
+  /** Phone toggle: persist the push-to-talk hotkey and (re)arm it live. */
+  async updatePushToTalk(combo: string, enabled?: boolean): Promise<Record<string, unknown>> {
+    const on = enabled !== false && Boolean(combo.trim());
+    const next = on ? combo.trim() : '';
+    await this.configManager.updateVoice({ enabled: on, pushToTalk: next });
+    this.armPushToTalk(next);
+    return { enabled: on, combo: next };
   }
 
   async transcribeAudio(audioBase64: string, opts?: { format?: string; language?: string }): Promise<any> {
@@ -2567,6 +2720,8 @@ export class UmbraOS {
       getLogger().warn({ err: err.message }, 'Could not restore the meeting mic on shutdown');
     }
     this.hotkey?.stop();
+    this.pushToTalkHotkey?.stop();
+    this.issueWatcher?.stop();
     this.p2p?.stop();
     this.pwa?.stop();
     this.deviceClient?.stop();

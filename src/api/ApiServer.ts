@@ -131,6 +131,12 @@ export interface ApiServerDeps {
   meshRevoke(deviceId: string): Promise<unknown>;
   /** MCP JSON-RPC entrypoint — returns null for notifications (HTTP 202). */
   mcpHandle(message: Record<string, unknown>): Promise<McpJsonRpcResponse | null>;
+  /** Chrome Extension — receive batched browser telemetry. */
+  handleChromeTelemetry(events: unknown[], sessionId: string, cookieSnapshot: unknown): Promise<unknown>;
+  /** Chrome Extension — current connection/session status. */
+  getChromeExtensionStatus(): unknown;
+  /** Chrome Extension — list detected login/OAuth events. */
+  getChromeLoginEvents(): unknown;
   shutdown(): void;
 }
 
@@ -667,6 +673,14 @@ export class ApiServer {
         const msg = (body.msg && typeof body.msg === 'object') ? body.msg as Record<string, unknown> : {};
         return { sent: await this.deps.sendToDevice(deviceId, msg) };
       }],
+      [/^POST \/api\/chrome\/telemetry$/, async (_url, body) => {
+        const events = Array.isArray(body.events) ? body.events : [];
+        const sessionId = String(body.sessionId || '');
+        const cookieSnapshot = body.cookieSnapshot || {};
+        return this.deps.handleChromeTelemetry(events, sessionId, cookieSnapshot);
+      }],
+      [/^GET \/api\/chrome\/status$/, async () => this.deps.getChromeExtensionStatus()],
+      [/^GET \/api\/chrome\/logins$/, async () => this.deps.getChromeLoginEvents()],
       [/^POST \/api\/shutdown$/, async () => {
         this.deps.shutdown();
         return { ok: true };
@@ -769,10 +783,10 @@ export class ApiServer {
     'knowledge:updated',
     'vault:entry',
     'overlay:toggle', 'overlay:command',
-    'stream:started', 'stream:stopped',
-    'screen:update', 'screen:cursor',
-    'meeting:order', 'meeting:transcript',
-  ] as const;
+    'stream:started', 'stream:stopped',      'screen:update', 'screen:cursor',
+      'meeting:order', 'meeting:transcript',
+      'chrome:telemetry',
+    ] as const;
 
   private subscribeBus(): void {
     for (const name of this.eventNames) {

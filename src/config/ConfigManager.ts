@@ -45,6 +45,14 @@ const DEFAULT_CONFIG: UmbraConfig = {
     enabled: true,
   },
   repos: [],
+  github: {
+    enabled: false,
+    repositories: [],
+    pollIntervalMs: 60000,
+    tokenService: 'github',
+    consentRequired: true,
+    commentResults: true,
+  },
   logging: {
     level: 'info',
     prettyPrint: true,
@@ -145,6 +153,7 @@ const DEFAULT_CONFIG: UmbraConfig = {
   },
   voice: {
     enabled: false,
+    pushToTalk: '',
     sttProvider: 'none',
     sttEndpoint: 'https://api.openai.com/v1/audio/transcriptions',
     sttApiKey: '',
@@ -258,6 +267,13 @@ export class ConfigManager {
     if (patch.enabled !== undefined) this.config.telco.enabled = patch.enabled;
     if (patch.fromNumber !== undefined) this.config.telco.fromNumber = patch.fromNumber;
     if (patch.messagingProfileId !== undefined) this.config.telco.messagingProfileId = patch.messagingProfileId;
+    await this.saveConfig();
+  }
+
+  /** Persist voice settings — the push-to-talk hotkey combo + master switch. */
+  async updateVoice(patch: { enabled?: boolean; pushToTalk?: string }): Promise<void> {
+    if (patch.enabled !== undefined) this.config.voice.enabled = patch.enabled;
+    if (patch.pushToTalk !== undefined) this.config.voice.pushToTalk = patch.pushToTalk;
     await this.saveConfig();
   }
 

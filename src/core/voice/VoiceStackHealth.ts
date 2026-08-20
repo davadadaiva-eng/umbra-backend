@@ -10,12 +10,13 @@
  *   - asr       — meeting diarization server is up (vibevoice)
  *   - cable     — the virtual audio cable is present (VB-Cable / named device)
  *   - loopback  — WASAPI loopback capture is available for hearing meetings
+ *   - mic       — a microphone capture device is present for push-to-talk
  *
  * Disabled components are reported as `status: "disabled"` and never fail the
  * overall stack — only *configured* components count toward the result.
  */
 
-export type VoiceStackComponent = 'stt' | 'tts' | 'asr' | 'cable' | 'loopback';
+export type VoiceStackComponent = 'stt' | 'tts' | 'asr' | 'cable' | 'loopback' | 'mic';
 
 export interface ComponentHealth {
   component: VoiceStackComponent;
@@ -50,6 +51,7 @@ export interface VoiceStackProbes {
   asr?: ComponentProbeFn;
   cable?: ComponentProbeFn;
   loopback?: ComponentProbeFn;
+  mic?: ComponentProbeFn;
 }
 
 export interface VoiceStackHealthConfig {
@@ -58,6 +60,8 @@ export interface VoiceStackHealthConfig {
   asrProvider: 'none' | 'vibevoice' | 'whisper';
   audioCable: 'none' | 'auto' | string;
   loopbackEnabled: boolean;
+  /** Microphone capture for push-to-talk (default false). */
+  micEnabled?: boolean;
 }
 
 export interface VoiceStackHealthOptions {
@@ -126,6 +130,7 @@ export class VoiceStackHealth {
       probeResult('asr', config.asrProvider !== 'none', probes?.asr),
       probeResult('cable', config.audioCable !== 'none' && config.audioCable !== undefined, probes?.cable),
       probeResult('loopback', config.loopbackEnabled, probes?.loopback),
+      probeResult('mic', config.micEnabled === true, probes?.mic),
     ]);
     this.report = {
       ok: components.every(c => !c.configured || c.ok),

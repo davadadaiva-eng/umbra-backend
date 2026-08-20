@@ -21,6 +21,7 @@ function Logo({ className = '' }: { className?: string }) {
 
 export default function App() {
   const [open, setOpen] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
 
   useEffect(() => {
     document.body.style.overflow = open ? 'hidden' : ''
@@ -111,23 +112,43 @@ export default function App() {
           <div className="flex flex-col gap-6 sm:gap-8 lg:flex-row lg:items-end lg:justify-between">
             {/* Left: headline + email CTA */}
             <div className="max-w-xl">
+              <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 backdrop-blur-lg">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#010101] lg:bg-white" />
+                <span className="text-[11px] font-semibold uppercase tracking-[0.25em] text-[#010101]/70 lg:text-white/70">
+                  Umbra OS
+                </span>
+              </div>
               <h1 className="text-3xl font-semibold leading-[1.1] tracking-tight text-[#010101] sm:text-4xl lg:text-[3.5rem] lg:text-white">
                 Ship AI workers that grind while you rest
               </h1>
 
-              <form className="mt-6 flex flex-col gap-3 sm:mt-8 sm:inline-flex sm:flex-row sm:items-center sm:rounded-full sm:bg-white sm:p-1.5">
-                <input
-                  type="email"
-                  placeholder="Type your email"
-                  className="rounded-full bg-white px-5 py-3 text-sm text-gray-900 outline-none placeholder-gray-400 sm:w-64 sm:rounded-none sm:bg-transparent sm:px-4 sm:py-2"
-                />
-                <button
-                  type="submit"
-                  className={`rounded-full px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 sm:py-2.5 ${GRADIENT}`}
+              {submitted ? (
+                <div className="mt-6 flex items-center gap-3 rounded-full bg-white/10 px-6 py-3.5 text-sm font-medium text-[#010101] backdrop-blur-lg sm:mt-8 lg:text-white">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  You&rsquo;re on the list — watch your inbox.
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    setSubmitted(true)
+                  }}
+                  className="mt-6 flex flex-col gap-3 sm:mt-8 sm:inline-flex sm:flex-row sm:items-center sm:rounded-full sm:bg-white sm:p-1.5"
                 >
-                  Get started
-                </button>
-              </form>
+                  <input
+                    type="email"
+                    required
+                    placeholder="Type your email"
+                    className="rounded-full bg-white px-5 py-3 text-sm text-gray-900 outline-none placeholder-gray-400 sm:w-64 sm:rounded-none sm:bg-transparent sm:px-4 sm:py-2"
+                  />
+                  <button
+                    type="submit"
+                    className={`rounded-full px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 sm:py-2.5 ${GRADIENT}`}
+                  >
+                    Get started
+                  </button>
+                </form>
+              )}
             </div>
 
             {/* Right: glass cards */}

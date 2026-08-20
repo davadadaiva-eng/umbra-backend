@@ -135,6 +135,28 @@ export interface UmbraConfig {
     enabled: boolean;
   };
   repos: RepoConfig[];
+  /**
+   * GitHub issue → task loop: watch repos, dispatch new open issues as agent
+   * tasks (routed through CompanionRegistry), and post the completed summary
+   * back as an issue comment. Optional — absent = disabled.
+   */
+  github?: {
+    enabled: boolean;
+    /** Repos to watch (owner/repo, optionally mapped to a local ReposManager repo). */
+    repositories: { owner: string; repo: string; localName?: string }[];
+    /** Poll interval in ms (default 60_000). */
+    pollIntervalMs?: number;
+    /** CredentialVault service key holding the GitHub PAT (default 'github'). */
+    tokenService?: string;
+    /** Only watch issues carrying any of these labels (empty = all open issues). */
+    labels?: string[];
+    /** Only watch issues assigned to this login (empty = any assignee). */
+    assignedTo?: string;
+    /** Ask the user before dispatching each issue (default true). */
+    consentRequired?: boolean;
+    /** Post the task summary back as a comment (default true). */
+    commentResults?: boolean;
+  };
   logging: {
     level: 'debug' | 'info' | 'warn' | 'error';
     prettyPrint: boolean;
@@ -288,6 +310,12 @@ export interface UmbraConfig {
   /** Voice-to-text (and TTS) — pluggable providers, free/local or cloud. */
   voice: {
     enabled: boolean;
+    /**
+     * Hold-to-talk hotkey combo (e.g. "Ctrl+Shift+Space") that captures the
+     * microphone while held, then transcribes → routes → submits a task and
+     * speaks back a confirmation on release. Empty = push-to-talk disabled.
+     */
+    pushToTalk?: string;
     /**
      * STT backend: 'none' | 'openai' (Whisper API) | 'whisper-local'
      * (a whisper.cpp server, e.g. http://localhost:8080).

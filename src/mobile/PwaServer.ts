@@ -26,6 +26,10 @@ export interface PwaServerOptions {
   onRetryTask?: (taskId: string, description?: string) => Promise<unknown>;
   /** Device-mesh overview for the PWA (plan device limit + registered devices). */
   getDeviceInfo?: () => unknown;
+  /** Voice/push-to-talk state for the PWA settings card (enabled/combo/capturing/micOk). */
+  getPushToTalkStatus?: () => unknown;
+  /** Persist + (re)arm the push-to-talk hotkey from the phone (combo, enabled). */
+  onSetPushToTalk?: (combo: string, enabled?: boolean) => Promise<unknown>;
 }
 
 /**
@@ -86,6 +90,16 @@ export class PwaServer {
     // (plan device limit + registered devices + online status).
     if (req.method === 'GET' && parsed.pathname === '/api/devices') {
       this.json(res, 200, { devices: this.options.getDeviceInfo ? this.options.getDeviceInfo() : null });
+      return;
+    }
+
+    // Voice/push-to-talk state + toggle for the PWA settings card.
+    if (req.method === 'GET' && parsed.pathname === '/api/voice/ptt') {
+      this.json(res, 200, { pushToTalk: this.options.getPushToTalkStatus ? this.options.getPushToTalkStatus() : null });
+      return;
+    }
+    if (req.method === 'POST' && parsed.pathname === '/api/voice/ptt') {
+      this.handleSetPushToTalk(req, res);
       return;
     }
 
@@ -172,6 +186,27 @@ export class PwaServer {
       this.json(res, 200, { dispatch });
     } catch (err: any) {
       this.json(res, 500, { error: err.message || 'Task dispatch failed' });
+    }
+  }
+
+  private async handleSetPushToTalk(req: import('http').IncomingMessage, res: import('http').ServerResponse): Promise<void> {
+    if (!this.options.onSetPushToTalk) {
+      this.json(res, 501, { error: 'Push-to-talk control is not available on this node' });
+      return;
+    }
+    let body: { combo?: string; enabled?: boolean } = {};
+    try {
+      body = await this.readJson(req);
+    } catch {
+      this.json(res, 400, { error: 'Invalid JSON body' });
+      return;
+    }
+    const combo = String(body.combo || '').trim();
+    try {
+      const state = await this.options.onSetPushToTalk(combo, body.enabled !== false);
+      this.json(res, 200, { pushToTalk: state });
+    } catch (err: any) {
+      this.json(res, 500, { error: err.message || 'Could not update push-to-talk' });
     }
   }
 
